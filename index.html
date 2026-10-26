@@ -238,7 +238,7 @@ details.card.help { padding: 12px 14px; border-top: 1px solid var(--line); }
 <div class="wrap">
   <header class="top">
     <div class="title">
-      <h1 id="h1">노드 배치</h1>
+      <h1 id="h1">AutoRelay 노드 배치</h1>
       <p class="sub">노드를 고르고 지도를 눌러 찍거나, 찍힌 점을 끌어서 옮기세요. 링크와 토폴로지는 바로, 드론 위치는 손을 떼면 다시 계산합니다.</p>
     </div>
     <div class="regionpick"><label for="region">지역</label><select id="region"></select></div>
@@ -1191,7 +1191,6 @@ details.card.help { padding: 12px 14px; border-top: 1px solid var(--line); }
     stage.style.width = W + "px"; stage.style.height = H + "px";
     $("links").setAttribute("viewBox", `0 0 ${W} ${H}`);
     const img = $("mapimg"); img.src = `regions/${r.id}/map.png`; img.width = W; img.height = H; img.alt = r.name + " 지도";
-    $("h1").textContent = r.name + " 노드 배치";
     $("attrib").textContent = r.attribution || "";
     $("pxnote").textContent = `BS ${P.heights_m.BS} m, MS ${P.heights_m.MS1} m 안테나(지면 기준). 지도 1픽셀은 약 ${Math.round(MPP)} m입니다. `;
     relayNote();
