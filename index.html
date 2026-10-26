@@ -86,7 +86,7 @@ select, .field input[type="search"] {
 .stage img, .stage svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 .stage canvas { position: absolute; display: block; }
 .stage img { image-rendering: auto; }
-.tiles { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.tiles { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 0; }  /* own stacking context: tile z-indexes stay under the heat map, links and pins */
 .tiles img { position: absolute; display: block; max-width: none; inset: auto; user-select: none; }
 .basemaps button { height: 32px; font-family: var(--font-body); }
 #heat { opacity: .62; image-rendering: pixelated; }
@@ -786,6 +786,12 @@ details.card.help { padding: 12px 14px; border-top: 1px solid var(--line); }
     if (state.relay) return fromM(state.relay.xy[0], state.relay.xy[1]);
     return null;
   }
+  // the relay drawn on the map: a manual pick, or the automatic spot only when the plan really goes through the drone
+  // (with no gain every spot ties and the search keeps its first grid cell, a map corner)
+  function relayOnMap() {
+    const cur = current();
+    return state.relayMode === "manual" || (cur && cur.final.usesRelay) ? relayPoint() : null;
+  }
   function current() {
     if (state.relayMode === "manual") return state.manual;
     return state.relay;
@@ -800,7 +806,7 @@ details.card.help { padding: 12px 14px; border-top: 1px solid var(--line); }
     }
     const tab = cur ? cur.final_table : state.live && state.live.tab;
     const info = Object.assign({}, state.live ? state.live.info : {}, cur && cur.info ? cur.info : {});
-    const names = ["BS", "MS1", "MS2", ...(cur && relayPoint() ? ["R"] : [])];
+    const names = ["BS", "MS1", "MS2", ...(cur && (relayOnMap() || (topo && topo.links.some((l) => l.includes("R")))) ? ["R"] : [])];
     return { topo, tab, info, names };
   }
   const PAIRS = [["BS", "MS1"], ["BS", "MS2"], ["MS1", "MS2"], ["R", "BS"], ["R", "MS1"], ["R", "MS2"]];
@@ -839,7 +845,7 @@ details.card.help { padding: 12px 14px; border-top: 1px solid var(--line); }
                                          text: linkLabel(tab, a, b), used: !!u, bad: tab[a + ">" + b] < 0 });
     }
     // keep clear of the pins and their name tags (tag: 12 px right, 22 px up of the pin, about 8 px per letter)
-    const pins = [...NODES.filter((n) => state.pos[n.key]).map((n) => [n.key, state.pos[n.key]]), ...(relayPoint() ? [["R", relayPoint()]] : [])];
+    const pins = [...NODES.filter((n) => state.pos[n.key]).map((n) => [n.key, state.pos[n.key]]), ...(relayOnMap() ? [["R", relayOnMap()]] : [])];
     const boxes = pins.flatMap(([k, p]) => [{ x: p.u, y: p.v, w: 26 * inv, h: 26 * inv },
       { x: p.u + (12 + (k.length * 8 + 10) / 2) * inv, y: p.v - 13 * inv, w: (k.length * 8 + 12) * inv, h: 20 * inv }]);
     const hit = (a) => boxes.some((b) => Math.abs(a.x - b.x) * 2 < a.w + b.w && Math.abs(a.y - b.y) * 2 < a.h + b.h);
@@ -872,15 +878,15 @@ details.card.help { padding: 12px 14px; border-top: 1px solid var(--line); }
       pin.append(i, t); stage.append(pin);
     };
     for (const n of NODES) if (state.pos[n.key]) add(n.key, state.pos[n.key], n.c);
-    const rp = relayPoint(), cur = current();
-    if (rp && (state.relayMode === "manual" || (cur && cur.final.usesRelay))) add("R", rp, "var(--relay)", state.relayMode === "manual" ? "relay" : "relay auto");
+    const rp = relayOnMap();
+    if (rp) add("R", rp, "var(--relay)", state.relayMode === "manual" ? "relay" : "relay auto");
     drawLinks();
   }
   function renderNodes() {
     const list = $("nodes");
     const rows = NODES.map((n) => ({ key: n.key, label: n.key, h: `안테나 ${n.h} m`, c: n.c, p: state.pos[n.key] }));
     rows.push({ key: "R", label: "R", h: state.relayMode === "manual" ? `직접 지정 · 드론 ${state.hR} m` : `자동 최적 · 드론 ${state.hR} m`, c: "var(--relay)",
-                p: relayPoint(), relay: true });
+                p: relayOnMap(), relay: true });
     list.replaceChildren(...rows.map((n) => {
       const b = document.createElement("button");
       b.type = "button"; b.className = "node"; b.id = "node-" + n.key;
@@ -900,7 +906,7 @@ details.card.help { padding: 12px 14px; border-top: 1px solid var(--line); }
         const ll = lonlat(n.p.u, n.p.v);
         co.className = "coord"; co.style.whiteSpace = "pre-line";
         co.textContent = `${f6(ll.lat)} N, ${f6(ll.lon)} E\n${plusCode(ll.lat, ll.lon).slice(4)} · 지면 ${Math.round(groundAt(n.p.u, n.p.v))} m`;
-      } else { co.className = "coord empty"; co.textContent = n.relay ? "계산 후 표시됩니다" : "아직 찍지 않았습니다"; }
+      } else { co.className = "coord empty"; co.textContent = n.relay ? (current() ? "드론 없이 가는 편이 낫습니다" : "계산 후 표시됩니다") : "아직 찍지 않았습니다"; }
       b.append(top, co);
       if (n.p && !n.relay && onWater(n.p.u, n.p.v)) { const w = document.createElement("span"); w.className = "chip"; w.textContent = "수면 위입니다"; b.append(w); }
       if (n.relay && state.relayMode === "manual") {
