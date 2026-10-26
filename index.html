@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+KR:wght@400;500;600&display=swap">
 <style>
-/* Layout: zoomable map sheet on the left, live link ledger on the right; stacks on phones */
+/* Layout: map pinned on the left (sticky on wide screens), result card first, then nodes and tabbed details; stacks on phones */
 :root {
   --bg: #f3f4f2;
   --sheet: #ffffff;
@@ -50,46 +50,44 @@ body {
   background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15px; line-height: 1.55;
   padding-left: max(16px, env(safe-area-inset-left, 0px));
   padding-right: max(16px, env(safe-area-inset-right, 0px));
-  padding-block: 20px 32px;
+  padding-block: 16px 32px;
 }
-.wrap { max-width: 1240px; margin: 0 auto; display: grid; gap: 16px; }
-header h1 { font-size: 1.45rem; font-weight: 600; margin: 0; text-wrap: balance; letter-spacing: -0.01em; }
-header p { margin: 4px 0 0; color: var(--muted); max-width: 72ch; }
-.layout { display: grid; grid-template-columns: minmax(0, 1fr) 390px; gap: 16px; align-items: start; }
-@media (max-width: 900px) { .layout { grid-template-columns: minmax(0, 1fr); } }
+.wrap { max-width: 1320px; margin: 0 auto; display: grid; gap: 14px; }
+header.top { display: flex; flex-wrap: wrap; gap: 10px 24px; align-items: flex-end; justify-content: space-between; }
+header.top .title { min-width: 0; flex: 1 1 420px; }
+header h1 { font-size: 1.4rem; font-weight: 600; margin: 0; text-wrap: balance; letter-spacing: -0.01em; line-height: 1.3; }
+header .sub { margin: 4px 0 0; color: var(--muted); font-size: .9rem; max-width: 70ch; }
+.regionpick { display: grid; gap: 3px; flex: 0 1 280px; min-width: 0; }
+.regionpick label { font-size: .72rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 600; }
+select, .field input[type="search"] {
+  font: inherit; color: var(--ink); background: var(--sheet); border: 1px solid var(--line); border-radius: 5px;
+  padding: 6px 8px; min-width: 0; width: 100%;
+}
+.layout { display: grid; grid-template-columns: minmax(0, 1fr) 430px; gap: 16px; align-items: start; }
 .sheet { background: var(--sheet); border: 1px solid var(--line); border-radius: 6px; min-width: 0; }
 
 /* map */
-.mapbox { padding: 10px; display: grid; gap: 8px; }
+.mapbox { padding: 10px; display: grid; gap: 8px; position: sticky; top: max(12px, env(safe-area-inset-top, 0px)); }
 .toolbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .toolbar .sp { flex: 1; }
 .iconbtn {
-  font: 500 .9rem var(--font-body); min-width: 34px; height: 32px; padding: 0 10px; border-radius: 5px; cursor: pointer;
+  font: 500 .88rem var(--font-body); min-width: 34px; height: 32px; padding: 0 10px; border-radius: 5px; cursor: pointer;
   border: 1px solid var(--line); background: var(--sheet); color: var(--ink);
 }
 .iconbtn[aria-pressed="true"] { background: var(--soft); border-color: var(--accent); color: var(--accent); }
 .viewport {
-  position: relative; width: 100%; aspect-ratio: 1 / 1; max-height: 78vh; overflow: hidden; border-radius: 4px;
-  background: var(--soft); touch-action: none; cursor: crosshair; user-select: none; margin: 0 auto;
+  position: relative; width: 100%; aspect-ratio: 1 / 1; max-width: 100%; max-height: calc(100vh - 170px); overflow: hidden;
+  border-radius: 4px; background: var(--soft); touch-action: none; cursor: crosshair; user-select: none; margin: 0 auto;
 }
 .viewport.panning { cursor: grabbing; }
 .stage { position: absolute; left: 0; top: 0; width: 1000px; height: 1000px; transform-origin: 0 0; }
-.region { display: grid; gap: 8px; }
-.region select, .region input {
-  font: inherit; color: var(--ink); background: var(--sheet); border: 1px solid var(--line); border-radius: 5px;
-  padding: 6px 8px; min-width: 0;
-}
-.region .line { display: flex; gap: 6px; flex-wrap: wrap; }
-.region .line > * { flex: 1 1 160px; }
-.region .line .btn { flex: 0 0 auto; }
-.attrib { font-size: .72rem; color: var(--muted); text-align: right; }
+.mapfoot { display: flex; flex-wrap: wrap; gap: 4px 16px; align-items: center; justify-content: space-between; }
+.attrib { font-size: .72rem; color: var(--muted); }
 .stage img, .stage svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 .stage canvas { position: absolute; display: block; }
 .stage img { image-rendering: auto; }
-#heat { opacity: .5; image-rendering: pixelated; }
-.pin {
-  position: absolute; width: 0; height: 0; z-index: 3; cursor: grab;
-}
+#heat { opacity: .62; image-rendering: pixelated; }
+.pin { position: absolute; width: 0; height: 0; z-index: 3; cursor: grab; }
 .pin i {
   position: absolute; left: -10px; top: -10px; width: 20px; height: 20px; border-radius: 50%;
   background: var(--c); border: 3px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.5);
@@ -100,61 +98,95 @@ header p { margin: 4px 0 0; color: var(--muted); max-width: 72ch; }
 }
 .pin.relay i { border-radius: 3px; transform: rotate(45deg); }
 .pin.auto { pointer-events: none; }
-.readout {
-  font: 12.5px/1.4 var(--font-mono); color: var(--muted); font-variant-numeric: tabular-nums;
-  display: flex; flex-wrap: wrap; gap: 4px 14px; min-height: 1.4em; justify-content: center; text-align: center;
-}
-.legend { display: flex; align-items: center; gap: 8px; font-size: .8rem; color: var(--muted); justify-content: center; flex-wrap: wrap; }
-.legend .bar { width: 140px; height: 9px; border-radius: 2px; background: linear-gradient(90deg, #2b1a4e, #6a2c8a, #c0477a, #f08a4b, #f9e07a); }
+.readout { font: 12px/1.4 var(--font-mono); color: var(--muted); font-variant-numeric: tabular-nums; min-height: 1.4em; }
+.legend { display: flex; align-items: center; gap: 8px; font-size: .78rem; color: var(--muted); flex-wrap: wrap; }
+.legend .bar { width: 120px; height: 8px; border-radius: 2px; background: linear-gradient(90deg, #2b1a4e, #6a2c8a, #c0477a, #f08a4b, #f9e07a); }
 
 /* panel */
-.panel { padding: 14px; display: grid; gap: 14px; }
-.panel h2 { font-size: .76rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0; font-weight: 600; }
-.group { display: grid; gap: 8px; }
-.nodes { display: grid; gap: 6px; }
+.panel { display: grid; gap: 12px; min-width: 0; }
+.card { padding: 14px; display: grid; gap: 10px; }
+.card h2, .form h3 { font-size: .74rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0; font-weight: 600; }
+
+/* result card */
+.summary { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.result { display: grid; gap: 10px; }
+.row { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 2px 12px; align-items: baseline; }
+.row .k { color: var(--muted); font-size: .82rem; font-weight: 500; }
+.row .v { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; min-width: 0; }
+.row .v br { display: none; }
+.topo { font: 600 .95rem var(--font-mono); padding: 1px 7px; border-radius: 4px; background: var(--soft); }
+.rate { font: 600 1.3rem/1.2 var(--font-mono); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+.desc { color: var(--muted); font-size: .8rem; font-family: var(--font-mono); word-break: break-word; flex-basis: 100%; }
+.gain { font: 600 .85rem var(--font-body); color: var(--ok-ink); }
+.state { font-size: .78rem; color: var(--muted); display: flex; align-items: center; gap: 8px; }
+.state .bar { flex: 1; height: 3px; background: var(--soft); border-radius: 2px; overflow: hidden; min-width: 40px; }
+.state .bar b { display: block; height: 100%; width: 0; background: var(--accent); }
+
+/* nodes */
+.nodes { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 6px; }
 .node {
   text-align: left; font: inherit; color: inherit; background: transparent; cursor: pointer;
-  border: 1px solid var(--line); border-radius: 5px; padding: 8px 10px; display: grid; gap: 2px;
+  border: 1px solid var(--line); border-radius: 5px; padding: 7px 9px; display: grid; gap: 2px; min-width: 0;
 }
-.node:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.node[aria-checked="true"] { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
-.node .top { display: flex; align-items: center; gap: 8px; }
+.node:focus-visible, button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.node[aria-checked="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--soft) 60%, transparent); }
+.node .top { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
 .dot { width: 11px; height: 11px; border-radius: 50%; background: var(--c); flex: none; }
 .dot.sq { border-radius: 2px; transform: rotate(45deg); }
 .node .name { font-weight: 600; }
-.node .h { color: var(--muted); font-size: .82rem; }
-.node .hint { margin-left: auto; font-size: .76rem; color: var(--accent); font-weight: 500; }
-.coord { font: 12px/1.45 var(--font-mono); font-variant-numeric: tabular-nums; word-break: break-all; }
+.node .h { color: var(--muted); font-size: .78rem; }
+.node .hint { flex-basis: 100%; font-size: .74rem; color: var(--accent); font-weight: 500; }
+.coord { font: 11.5px/1.45 var(--font-mono); font-variant-numeric: tabular-nums; word-break: break-all; }
 .coord.empty { color: var(--muted); font-family: var(--font-body); }
-.chip { display: inline-block; font-size: .74rem; padding: 1px 7px; border-radius: 999px; background: var(--warn-bg); color: var(--warn-ink); width: fit-content; }
-.seg { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-.seg .lab { font-size: .85rem; color: var(--muted); min-width: 72px; }
+.chip { display: inline-block; font-size: .72rem; padding: 1px 7px; border-radius: 999px; background: var(--warn-bg); color: var(--warn-ink); width: fit-content; }
+
+/* tabs */
+.tabs { padding: 0; gap: 0; }
+.tablist { display: flex; overflow-x: auto; border-bottom: 1px solid var(--line); padding: 0 6px; scrollbar-width: none; }
+.tablist button {
+  font: 500 .86rem var(--font-body); color: var(--muted); background: none; border: 0; cursor: pointer; white-space: nowrap;
+  padding: 11px 10px 9px; border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.tablist button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); font-weight: 600; }
+.tabpanel { padding: 14px; display: grid; gap: 12px; min-width: 0; }
+
+/* conditions form: label column + control column */
+.form { display: grid; grid-template-columns: 7.2em minmax(0, 1fr); gap: 10px 12px; align-items: center; }
+.form > .lab { font-size: .84rem; color: var(--muted); }
+.form > h3 { grid-column: 1 / -1; padding-top: 6px; }
+.ctl { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-width: 0; }
+.ctl .unit { font-size: .8rem; color: var(--muted); }
+.ctl .sublab { font-size: .78rem; color: var(--muted); margin-left: 4px; }
+.ctl .sublab:first-child { margin-left: 0; }
+.seg { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+.seg .lab { font-size: .84rem; color: var(--muted); }
 .seg button {
-  font: 500 .85rem var(--font-mono); padding: 4px 10px; border-radius: 5px; cursor: pointer;
+  font: 500 .84rem var(--font-mono); padding: 4px 9px; border-radius: 5px; cursor: pointer;
   border: 1px solid var(--line); background: transparent; color: var(--ink);
 }
 .seg button[aria-pressed="true"] { border-color: var(--accent); background: var(--soft); color: var(--accent); }
+.slider { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.slider input[type="range"] { flex: 1 1 120px; accent-color: var(--accent); min-width: 0; }
+.slider output { font: 500 .88rem var(--font-mono); min-width: 48px; text-align: right; font-variant-numeric: tabular-nums; }
+input.num {
+  width: 4.6em; font: 500 .85rem var(--font-mono); color: var(--ink); background: var(--sheet);
+  border: 1px solid var(--line); border-radius: 5px; padding: 4px 6px; text-align: right;
+}
+input.num.sm { width: 3.8em; }
+.tbl { display: grid; gap: 8px; }
+table.airtime input { width: 4.2em; font: inherit; color: var(--ink); background: var(--sheet); border: 1px solid var(--line); border-radius: 4px; padding: 2px 4px; text-align: right; }
 
-.result { display: grid; gap: 6px; }
-.row { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 4px 10px; align-items: baseline; }
-.row .k { color: var(--muted); font-size: .85rem; }
-.topo { font-weight: 600; font-family: var(--font-mono); }
-.rate { font-variant-numeric: tabular-nums; }
-.desc { color: var(--muted); font-size: .82rem; font-family: var(--font-mono); word-break: break-word; }
-.gain { font-weight: 600; color: var(--ok-ink); }
-.state { font-size: .8rem; color: var(--muted); display: flex; align-items: center; gap: 6px; }
-.state .bar { flex: 1; height: 3px; background: var(--soft); border-radius: 2px; overflow: hidden; }
-.state .bar b { display: block; height: 100%; width: 0; background: var(--accent); }
-.tablewrap { overflow-x: auto; }
+/* tables */
+.tablewrap { overflow-x: auto; min-width: 0; }
 table { border-collapse: collapse; font: 12.5px/1.3 var(--font-mono); font-variant-numeric: tabular-nums; width: 100%; }
-th, td { padding: 4px 6px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th, td { padding: 5px 6px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
 th { color: var(--muted); font-weight: 500; }
 th:first-child, td:first-child { text-align: left; }
 td.bad { color: var(--warn-ink); }
 td.na { color: var(--muted); }
 table.links td.name { font-weight: 600; }
 table.links tr.used td.name { color: var(--accent); }
-table.links .st { display: block; font-family: var(--font-body); font-size: .74rem; font-weight: 400; color: var(--muted); white-space: normal; }
+table.links .st { display: block; font-family: var(--font-body); font-size: .72rem; font-weight: 400; color: var(--muted); white-space: normal; min-width: 9em; }
 table.links tr.unused td { color: var(--muted); }
 table.links tr.unused td.bad { color: var(--warn-ink); }
 table.opts td, table.opts th { text-align: left; }
@@ -163,13 +195,6 @@ table.cmat td.self { color: var(--muted); }
 table.cmat td.inf { color: var(--warn-ink); }
 table.cmat td.on { color: var(--accent); font-weight: 600; }
 table.cmat td.lft, table.cmat th.lft { text-align: left; }
-.seg.slider input[type="range"] { flex: 1 1 140px; accent-color: var(--accent); min-width: 0; }
-.seg.slider output { font: 500 .9rem var(--font-mono); min-width: 52px; text-align: right; font-variant-numeric: tabular-nums; }
-.tbl { display: grid; gap: 6px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 5px; }
-.seg input.num { width: 5.2em; font: 500 .85rem var(--font-mono); color: var(--ink); background: var(--sheet); border: 1px solid var(--line); border-radius: 5px; padding: 4px 6px; text-align: right; }
-.seg .unit { font-size: .8rem; color: var(--muted); margin-right: 10px; }
-.seg input.num.sm { width: 4.2em; margin-right: 2px; }
-table.airtime input { width: 4.2em; font: inherit; color: var(--ink); background: var(--sheet); border: 1px solid var(--line); border-radius: 4px; padding: 2px 4px; text-align: right; }
 table.opts td.r { text-align: right; }
 table.opts tr.alt { cursor: pointer; }
 table.opts tr.alt:hover td { background: var(--soft); }
@@ -177,23 +202,46 @@ table.opts tr.alt[aria-selected="true"] td { background: var(--soft); box-shadow
 table.opts tr.sub th { padding-top: 10px; color: var(--ink); font-family: var(--font-body); font-weight: 600; font-size: .8rem; }
 table.opts .pick { font: 600 .7rem var(--font-body); color: var(--accent-ink); background: var(--accent); border-radius: 3px; padding: 1px 5px; margin-left: 4px; }
 table.opts .path { white-space: normal; word-break: break-word; }
+
+/* actions, notes, help */
 .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .btn {
-  font: 500 .9rem var(--font-body); border-radius: 5px; padding: 7px 13px; cursor: pointer;
+  font: 500 .88rem var(--font-body); border-radius: 5px; padding: 6px 12px; cursor: pointer;
   border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink);
 }
 .btn.ghost { background: transparent; color: var(--accent); }
 .btn:disabled { opacity: .45; cursor: not-allowed; }
-.status { font-size: .84rem; color: var(--muted); }
+.status { font-size: .82rem; color: var(--muted); }
 .status.ok { color: var(--ok-ink); }
 .status.err { color: var(--warn-ink); }
 .note { color: var(--muted); font-size: .8rem; margin: 0; }
+details.help { border-top: 1px solid var(--line); padding-top: 8px; }
+details.help summary { cursor: pointer; font-size: .82rem; color: var(--accent); font-weight: 500; }
+details.help[open] summary { margin-bottom: 6px; }
+details.help .note + .note { margin-top: 6px; }
+.field { display: flex; gap: 6px; flex-wrap: wrap; }
+details.card.help { padding: 12px 14px; border-top: 1px solid var(--line); }
+.field input { flex: 1 1 160px; }
+
+@media (max-width: 480px) {
+  .form { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .form > .lab { padding-top: 8px; }
+  .nodes { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 960px) {
+  .layout { grid-template-columns: minmax(0, 1fr); }
+  .mapbox { position: static; }
+  .viewport { max-height: 78vh; }
+}
 </style>
 
 <div class="wrap">
-  <header>
-    <h1 id="h1">노드 배치</h1>
-    <p>노드를 고르고 지도를 누르거나, 찍힌 점을 끌어서 옮기세요. BS·MS는 지면에만, 드론 중계기(R)는 수면 위에도 놓을 수 있습니다. 링크 e-SNR과 토폴로지는 옮기는 즉시 바뀌고, 최적 중계 위치는 손을 떼면 다시 계산합니다. 계산식은 Python 프레임워크와 같습니다(1.5 GHz, 채널 7 MHz 중 유효 대역폭 6 MHz, 수신감도 기준 e-SNR, EESM, 양방향 평균 e-SNR의 점유시간 표로 다익스트라).</p>
+  <header class="top">
+    <div class="title">
+      <h1 id="h1">노드 배치</h1>
+      <p class="sub">노드를 고르고 지도를 눌러 찍거나, 찍힌 점을 끌어서 옮기세요. 링크와 토폴로지는 바로, 드론 위치는 손을 떼면 다시 계산합니다.</p>
+    </div>
+    <div class="regionpick"><label for="region">지역</label><select id="region"></select></div>
   </header>
 
   <div class="layout">
@@ -204,7 +252,7 @@ table.opts .path { white-space: normal; word-break: break-word; }
         <button class="iconbtn" id="zfit" type="button">전체</button>
         <span class="sp"></span>
         <button class="iconbtn" id="lnkbtn" type="button" aria-pressed="true">링크 e-SNR</button>
-        <button class="iconbtn" id="heatbtn" type="button" aria-pressed="true">중계 전송률 지도</button>
+        <button class="iconbtn" id="heatbtn" type="button" aria-pressed="true">드론 효과</button>
       </div>
       <div class="viewport" id="vp">
         <div class="stage" id="stage">
@@ -213,74 +261,98 @@ table.opts .path { white-space: normal; word-break: break-word; }
           <svg id="links" viewBox="0 0 1000 1000" aria-hidden="true"></svg>
         </div>
       </div>
-      <div class="legend" id="legend" hidden><span>중계기를 두었을 때 MS당 전송률</span><span id="lgmin">낮음</span><span class="bar"></span><span id="lgmax">높음</span></div>
-      <div class="readout" id="readout">휠·두 손가락으로 확대, 끌어서 이동합니다</div>
-      <div class="attrib" id="attrib"></div>
+      <div class="mapfoot">
+        <div class="legend" id="legend" hidden><span>드론을 두면 나아지는 곳 · MS당 전송률</span><span id="lgmin">낮음</span><span class="bar"></span><span id="lgmax">높음</span></div>
+        <div class="readout" id="readout">휠·두 손가락으로 확대, 끌어서 이동합니다</div>
+        <div class="attrib" id="attrib"></div>
+      </div>
     </section>
 
-    <aside class="sheet panel">
-      <div class="group region">
-        <h2>지역</h2>
-        <select id="region" aria-label="지역"></select>
-        <div class="line">
-          <input id="rq" type="search" placeholder="새 지역 검색 (예: 단양 도담삼봉)" aria-label="새 지역 검색">
-          <button class="btn ghost" id="rqbtn" type="button">요청</button>
-        </div>
-        <p class="note" id="rqnote">이 페이지는 외부 지도·고도 서버에 직접 접속할 수 없습니다. 요청을 남기고 채팅에서 "지역 추가해줘"라고 하시면 Claude가 OpenStreetMap 지도와 Copernicus 고도 자료를 받아 목록에 넣습니다.</p>
-      </div>
-
-      <div class="group">
-        <h2>노드</h2>
-        <div class="nodes" id="nodes" role="radiogroup" aria-label="찍을 노드"></div>
-      </div>
-
-      <div class="group">
-        <h2>조건</h2>
-        <div class="seg" id="txseg"><span class="lab">최대 송신출력</span></div>
-        <div class="seg"><label class="lab" for="sens">수신감도</label><input class="num" id="sens" type="number" step="1" inputmode="decimal"><span class="unit">dBm</span><label class="lab" for="beta">EESM β</label><input class="num" id="beta" type="number" step="0.1" min="0.1" inputmode="decimal"></div>
-        <div class="seg"><span class="lab">케이블 손실</span><label class="unit" for="cabBS">BS</label><input class="num sm" id="cabBS" type="number" step="0.5" min="0" inputmode="decimal"><label class="unit" for="cabMS">MS</label><input class="num sm" id="cabMS" type="number" step="0.5" min="0" inputmode="decimal"><label class="unit" for="cabR">드론</label><input class="num sm" id="cabR" type="number" step="0.5" min="0" inputmode="decimal"><span class="unit">dB</span></div>
-        <div class="seg slider"><label class="lab" for="fade">페이딩 여유</label><input id="fade" type="range" min="0" max="15" step="0.5" value="7"><output id="fadeout" for="fade">7 dB</output></div>
-        <div class="seg" id="fseg"><span class="lab">여유 기준</span></div>
-        <p class="note" id="radionote"></p>
-        <div class="seg slider"><label class="lab" for="hR">드론 높이</label><input id="hR" type="range" min="2" max="150" step="1" value="10"><output id="hRout" for="hR">10 m</output></div>
-        <div class="seg" id="wseg"><span class="lab">수면 위 중계</span></div>
-        <div class="seg" id="rseg"><span class="lab">위치 오차 반경</span></div>
-        <div class="tbl" id="tblbox" hidden>
-          <div class="tablewrap"><table class="airtime" id="airtab" aria-label="채널 점유시간 표"></table></div>
-          <div class="seg" id="bseg"><span class="lab">0 dB 미만</span></div>
-          <p class="note" id="tblnote"></p>
-        </div>
-      </div>
-
-      <div class="group">
-        <h2>링크별 e-SNR (다익스트라 입력)</h2>
-        <div class="tablewrap"><table class="links" id="tab" aria-label="링크별 e-SNR"></table></div>
-        <h2>채널 점유시간 표 (다익스트라 비용)</h2>
-        <div class="tablewrap"><table class="cmat" id="cmat" aria-label="채널 점유시간 표"></table></div>
-        <p class="note" id="costnote"></p>
-      </div>
-
-      <div class="group">
+    <aside class="panel">
+      <section class="sheet card summary" aria-label="결과">
         <h2>결과</h2>
         <div class="result" id="result"></div>
         <div class="tablewrap"><table class="cmat" id="routes" aria-label="통제국까지 최단 경로"></table></div>
         <div class="state" id="state"><span id="statetext">지형 자료를 불러오는 중</span><span class="bar"><b id="prog"></b></span></div>
-      </div>
+        <div class="actions">
+          <button class="btn" id="save" type="button" disabled>위치 저장</button>
+          <button class="btn ghost" id="load" type="button" hidden>불러오기</button>
+          <button class="btn ghost" id="copy" type="button">명령 복사</button>
+          <input id="loadfile" type="file" accept="application/json,.json" hidden>
+          <span class="status" id="status" role="status"></span>
+        </div>
+      </section>
 
-      <div class="group">
-        <h2>토폴로지 비교</h2>
-        <p class="note">다익스트라가 비교한 후보입니다. MS가 다른 MS를 중계하는 경우(BS→MS1→MS2, BS→MS2→MS1)도 들어 있습니다. 비용은 두 MS 경로 비용의 합이라, 중계하는 MS 앞 링크는 두 MS의 데이터를 실어 두 번 들어갑니다. 줄을 누르면 지도에 그 경로를 그립니다.</p>
-        <div class="tablewrap"><table class="opts" id="opts"></table></div>
-      </div>
+      <section class="sheet card">
+        <h2>노드</h2>
+        <div class="nodes" id="nodes" role="radiogroup" aria-label="찍을 노드"></div>
+      </section>
 
-      <div class="actions">
-        <button class="btn" id="save" type="button" disabled>위치 저장</button>
-        <button class="btn ghost" id="copy" type="button">명령 복사</button>
-        <button class="btn ghost" id="load" type="button" hidden>불러오기</button>
-        <input id="loadfile" type="file" accept="application/json,.json" hidden>
-        <span class="status" id="status" role="status"></span>
-      </div>
-      <p class="note"><span id="pxnote"></span> <span id="relaynote"></span> 손을 떼면 100 m 격자로 먼저 보여 준 뒤 설정 격자로 다듬습니다. 같은 위치를 Python으로 계산한 값과 e-SNR 차이 중앙값은 0.002 dB입니다.</p>
+      <section class="sheet card tabs">
+        <div class="tablist" role="tablist" aria-label="세부 정보">
+          <button type="button" role="tab" id="tab-cond" aria-controls="tp-cond" aria-selected="true">조건</button>
+          <button type="button" role="tab" id="tab-links" aria-controls="tp-links" aria-selected="false">링크 e-SNR</button>
+          <button type="button" role="tab" id="tab-cost" aria-controls="tp-cost" aria-selected="false">점유시간 표</button>
+          <button type="button" role="tab" id="tab-opts" aria-controls="tp-opts" aria-selected="false">토폴로지 비교</button>
+        </div>
+
+        <div class="tabpanel" role="tabpanel" id="tp-cond" aria-labelledby="tab-cond">
+          <div class="form">
+            <h3>운용</h3>
+            <span class="lab">최대 송신출력</span><div class="seg" id="txseg"></div>
+            <label class="lab" for="hR">드론 높이</label>
+            <div class="slider"><input id="hR" type="range" min="2" max="150" step="1" value="10"><output id="hRout" for="hR">10 m</output></div>
+            <span class="lab">수면 위 드론</span><div class="seg" id="wseg"></div>
+            <span class="lab">위치 오차 반경</span><div class="seg" id="rseg"></div>
+            <h3>장비·링크 예산</h3>
+            <label class="lab" for="sens">수신감도</label>
+            <div class="ctl"><input class="num" id="sens" type="number" step="1" inputmode="decimal"><span class="unit">dBm</span></div>
+            <label class="lab" for="beta">EESM β</label>
+            <div class="ctl"><input class="num" id="beta" type="number" step="0.1" min="0.1" inputmode="decimal"></div>
+            <span class="lab">케이블 손실</span>
+            <div class="ctl"><label class="sublab" for="cabBS">BS</label><input class="num sm" id="cabBS" type="number" step="0.5" min="0" inputmode="decimal"><label class="sublab" for="cabMS">MS</label><input class="num sm" id="cabMS" type="number" step="0.5" min="0" inputmode="decimal"><label class="sublab" for="cabR">드론</label><input class="num sm" id="cabR" type="number" step="0.5" min="0" inputmode="decimal"><span class="unit">dB</span></div>
+            <label class="lab" for="fade">페이딩 여유</label>
+            <div class="slider"><input id="fade" type="range" min="0" max="15" step="0.5" value="7"><output id="fadeout" for="fade">7 dB</output></div>
+            <span class="lab">여유 기준</span><div class="seg" id="fseg"></div>
+          </div>
+          <div class="tbl" id="tblbox" hidden>
+            <h2>채널 점유시간 표 (MCS 경계)</h2>
+            <div class="tablewrap"><table class="airtime" id="airtab" aria-label="채널 점유시간 표"></table></div>
+            <div class="seg" id="bseg"><span class="lab">0 dB 미만</span></div>
+            <p class="note" id="tblnote"></p>
+          </div>
+          <details class="help" id="help-cond">
+            <summary>계산 기준</summary>
+            <p class="note" id="radionote"></p>
+            <p class="note"><span id="pxnote"></span> <span id="relaynote"></span> 손을 떼면 100 m 격자로 먼저 보여 준 뒤 설정 격자로 다듬습니다. 같은 위치를 Python으로 계산한 값과 e-SNR 차이 중앙값은 0.002 dB입니다.</p>
+            <p class="note">계산식은 Python 프레임워크와 같습니다: 1.5 GHz, 채널 7 MHz 중 유효 대역폭 6 MHz, 수신감도 기준 e-SNR, EESM, 양방향 평균 e-SNR의 점유시간 표로 다익스트라. BS·MS는 지면에만, 드론은 수면 위에도 놓을 수 있습니다.</p>
+          </details>
+        </div>
+
+        <div class="tabpanel" role="tabpanel" id="tp-links" aria-labelledby="tab-links" hidden>
+          <div class="tablewrap"><table class="links" id="tab" aria-label="링크별 e-SNR"></table></div>
+          <p class="note" id="tabnote"></p>
+        </div>
+
+        <div class="tabpanel" role="tabpanel" id="tp-cost" aria-labelledby="tab-cost" hidden>
+          <div class="tablewrap"><table class="cmat" id="cmat" aria-label="채널 점유시간 표"></table></div>
+          <p class="note" id="costnote"></p>
+        </div>
+
+        <div class="tabpanel" role="tabpanel" id="tp-opts" aria-labelledby="tab-opts" hidden>
+          <p class="note">다익스트라가 비교한 후보입니다. MS가 다른 MS를 중계하는 경우(BS→MS1→MS2, BS→MS2→MS1)도 들어 있습니다. 줄을 누르면 지도에 그 경로를 그립니다.</p>
+          <div class="tablewrap"><table class="opts" id="opts"></table></div>
+        </div>
+      </section>
+
+      <details class="sheet card help" id="rqbox">
+        <summary>새 지역 요청</summary>
+        <div class="field line">
+          <input id="rq" type="search" placeholder="예: 단양 도담삼봉" aria-label="새 지역 검색">
+          <button class="btn ghost" id="rqbtn" type="button">요청</button>
+        </div>
+        <p class="note" id="rqnote">이 페이지는 외부 지도·고도 서버에 직접 접속할 수 없습니다. 요청을 남기고 채팅에서 "지역 추가해줘"라고 하시면 Claude가 OpenStreetMap 지도와 Copernicus 고도 자료를 받아 목록에 넣습니다.</p>
+      </details>
     </aside>
   </div>
 </div>
@@ -602,20 +674,20 @@ table.opts .path { white-space: normal; word-break: break-word; }
     cv.style.height = (ny * step / MPP / H * 100) + "%";
     const cx = cv.getContext("2d"), img = cx.createImageData(nx, ny);
     let lo = Infinity, hi = -Infinity;
-    for (const v of r.rate) { if (!(v > 0)) continue; const l = Math.log10(v); if (l < lo) lo = l; if (l > hi) hi = l; }
-    if (!isFinite(lo)) { lo = 0; hi = 0; }
+    const helps = (q) => r.rate[q] > 0 && r.usesRelay[q];  // colour only where routing through the drone wins
+    for (let q = 0; q < r.rate.length; q++) { if (!helps(q)) continue; const l = Math.log10(r.rate[q]); if (l < lo) lo = l; if (l > hi) hi = l; }
     const stops = [[43, 26, 78], [106, 44, 138], [192, 71, 122], [240, 138, 75], [249, 224, 122]];
     for (let q = 0; q < r.rate.length; q++) {
       const t = hi > lo ? (Math.log10(r.rate[q]) - lo) / (hi - lo) : 1;
       const f = t * (stops.length - 1), k = Math.min(stops.length - 2, Math.floor(f)), w = f - k;
       const o = ((ny - 1 - r.grid.i[q]) * nx + r.grid.j[q]) * 4;
-      if (!(r.rate[q] > 0)) continue;  // no usable topology with the relay here (MCS cost): leave the map visible
+      if (!helps(q)) continue;  // the drone does not help here: leave the map visible
       for (let c = 0; c < 3; c++) img.data[o + c] = Math.round(stops[k][c] + (stops[k + 1][c] - stops[k][c]) * w);
       img.data[o + 3] = 255;
     }
     cx.putImageData(img, 0, 0);
-    $("lgmin").textContent = mbps(10 ** lo);
-    $("lgmax").textContent = mbps(10 ** hi);
+    $("lgmin").textContent = isFinite(lo) && hi >= lo ? mbps(10 ** lo) : "-";
+    $("lgmax").textContent = isFinite(hi) && hi >= lo ? mbps(10 ** hi) : "-";
   }
   function relayPoint() {
     if (state.relayMode === "manual" && state.relayManual) return state.relayManual;
@@ -671,10 +743,24 @@ table.opts .path { white-space: normal; word-break: break-word; }
         mk("line", { x1: A.u, y1: A.v, x2: B.u, y2: B.v, stroke: "#14232a", "stroke-opacity": 0.55, "stroke-width": 1.3 * inv,
                      "stroke-dasharray": `${5 * inv} ${4 * inv}` });
       }
-      if (state.showLinks) labels.push({ x: (A.u + B.u) / 2, y: (A.v + B.v) / 2, text: linkLabel(tab, a, b), used: !!u, bad: tab[a + ">" + b] < 0 });
+      if (state.showLinks) labels.push({ x: (A.u + B.u) / 2, y: (A.v + B.v) / 2, ax: A.u, ay: A.v, bx: B.u, by: B.v,
+                                         text: linkLabel(tab, a, b), used: !!u, bad: tab[a + ">" + b] < 0 });
     }
-    for (const L of labels) {  // labels last so lines never cover them
+    // keep clear of the pins and their name tags (tag: 12 px right, 22 px up of the pin, about 8 px per letter)
+    const pins = [...NODES.filter((n) => state.pos[n.key]).map((n) => [n.key, state.pos[n.key]]), ...(relayPoint() ? [["R", relayPoint()]] : [])];
+    const boxes = pins.flatMap(([k, p]) => [{ x: p.u, y: p.v, w: 26 * inv, h: 26 * inv },
+      { x: p.u + (12 + (k.length * 8 + 10) / 2) * inv, y: p.v - 13 * inv, w: (k.length * 8 + 12) * inv, h: 20 * inv }]);
+    const hit = (a) => boxes.some((b) => Math.abs(a.x - b.x) * 2 < a.w + b.w && Math.abs(a.y - b.y) * 2 < a.h + b.h);
+    labels.sort((p, q) => q.used - p.used);  // used links get the first pick of space
+    for (const L of labels) {  // labels last so lines never cover them; slide along the link until free
       const fs = 11 * inv, w = (L.text.length * 6.4 + 10) * inv, h = 16 * inv;
+      let free = false;
+      for (const t of [0.5, 0.38, 0.62, 0.28, 0.72, 0.2, 0.8]) {
+        const x = L.ax + (L.bx - L.ax) * t, y = L.ay + (L.by - L.ay) * t;
+        if (!hit({ x, y, w, h })) { L.x = x; L.y = y; free = true; break; }
+      }
+      if (!free && !L.used) continue;  // no room: the link table still has it
+      boxes.push({ x: L.x, y: L.y, w, h });
       mk("rect", { x: L.x - w / 2, y: L.y - h / 2, width: w, height: h, rx: 3 * inv, fill: L.used ? "#14232a" : "#ffffff",
                    "fill-opacity": L.used ? 0.92 : 0.9, stroke: "#14232a", "stroke-width": 0.8 * inv });
       const t = mk("text", { x: L.x, y: L.y + fs * 0.36, "text-anchor": "middle", "font-size": fs, "font-family": "IBM Plex Mono, monospace",
@@ -762,7 +848,7 @@ table.opts .path { white-space: normal; word-break: break-word; }
       : `잡음 = kTB + 잡음지수 ${P.noise_figure_db} dB.`;
     $("radionote").textContent += ` 케이블 손실은 무전기 단자~안테나 구간입니다(기본값: LMR-400급 0.17 dB/m, BS 약 15 m·MS 2 m·드론 짧은 점퍼, 커넥터 0.2 dB/개). 페이딩 여유는 모든 링크 e-SNR에서 뺍니다: 고정 운용 7 dB = ITU-R P.1546 위치 변동 표준편차 5.5 dB × 1.28(90 % 위치 신뢰), MS 이동 운용은 다중경로 몫 3 dB를 더해 10 dB. 현장 측정으로 모델 오차를 맞추면 줄일 수 있습니다.`;
     mk($("wseg"), [[true, "허용"], [false, "제외"]], state.onWater, (v) => { state.onWater = v; P.relay_on_water = v; redo(); });
-    mk($("rseg"), [[0, "0 (비용만)"], [50, "50 m"], [100, "100 m"], [200, "200 m"]], P.robust_radius_m,
+    mk($("rseg"), [[0, "끔"], [50, "50 m"], [100, "100 m"], [200, "200 m"]], P.robust_radius_m,
        (v) => { P.robust_radius_m = state.robust = v; relayNote(); state.dirty = true; render(); scheduleRelay(); });
     const hr = $("hR");
     if (document.activeElement !== hr) hr.value = String(state.hR);
@@ -835,6 +921,20 @@ table.opts .path { white-space: normal; word-break: break-word; }
   }
   $("fade").addEventListener("input", (e) => setFade(parseFloat(e.target.value) || 0, false));
   $("fade").addEventListener("change", () => scheduleRelay());
+  // ---------------- detail tabs (remembered per viewer)
+  const TABS = ["cond", "links", "cost", "opts"];
+  function setTab(id) {
+    for (const t of TABS) { $("tab-" + t).setAttribute("aria-selected", String(t === id)); $("tp-" + t).hidden = t !== id; }
+    try { localStorage.setItem("autorelay.tab", id); } catch {}
+  }
+  for (const t of TABS) $("tab-" + t).addEventListener("click", () => setTab(t));
+  $("tab-cond").parentElement.addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+    const i = TABS.findIndex((t) => $("tab-" + t).getAttribute("aria-selected") === "true");
+    const n = TABS[(i + (e.key === "ArrowRight" ? 1 : TABS.length - 1)) % TABS.length];
+    setTab(n); $("tab-" + n).focus();
+  });
+  try { const k = localStorage.getItem("autorelay.tab"); if (TABS.includes(k)) setTab(k); } catch {}
   let hRaf = 0;
   $("hR").addEventListener("input", (e) => {
     state.hR = Math.min(HMAX, Math.max(HMIN, parseInt(e.target.value, 10) || HMIN));
@@ -845,7 +945,7 @@ table.opts .path { white-space: normal; word-break: break-word; }
   $("hR").addEventListener("change", () => scheduleRelay());  // new relay search when the slider is released
   function renderResult() {
     const box = $("result"); box.replaceChildren();
-    const row = (k, nodes) => { const d = document.createElement("div"); d.className = "row"; const kk = document.createElement("span"); kk.className = "k"; kk.textContent = k; const v = document.createElement("div"); v.append(...nodes); d.append(kk, v); box.append(d); };
+    const row = (k, nodes) => { const d = document.createElement("div"); d.className = "row"; const kk = document.createElement("span"); kk.className = "k"; kk.textContent = k; const v = document.createElement("div"); v.className = "v"; v.append(...nodes); d.append(kk, v); box.append(d); };
     const span = (cls, t) => { const s = document.createElement("span"); s.className = cls; s.textContent = t; return s; };
     if (!state.live) { row("상태", [span("desc", "세 노드를 모두 찍으면 계산합니다")]); return; }
     const b = state.live.base;
@@ -858,9 +958,9 @@ table.opts .path { white-space: normal; word-break: break-word; }
       if (nf !== nb) kids.push(document.createTextNode("  "), span("gain", `연결 MS ${nb} → ${nf}`));
       if (f.usesRelay && isFinite(g)) kids.push(document.createTextNode("  "), span("gain", "×" + (g >= 10 ? g.toFixed(0) : g.toFixed(2))));
       kids.push(document.createElement("br"), span("desc", f.usesRelay || !f.reachable || !f.reachable.length ? f.description : "중계기를 거치지 않는 편이 낫습니다"));
-      row(state.relayMode === "manual" ? "중계 (직접)" : "중계 포함", kids);
+      row(state.relayMode === "manual" ? "드론 (직접)" : "드론 중계", kids);
     } else {
-      row("중계 포함", [span("desc", "계산 중…")]);
+      row("드론 중계", [span("desc", "계산 중…")]);
     }
   }
   function linkState(i) {
@@ -905,11 +1005,8 @@ table.opts .path { white-space: normal; word-break: break-word; }
       tb.append(r);
     }
     t.append(tb);
-    const cap = document.createElement("caption");
-    cap.className = "note"; cap.style.textAlign = "left"; cap.style.captionSide = "bottom"; cap.style.paddingTop = "4px";
-    cap.textContent = "→ 는 앞 노드가 송신(사용 중인 링크는 DL), ← 는 반대 방향(UL)의 e-SNR입니다." +
+    $("tabnote").textContent = "→ 는 앞 노드가 송신(사용 중인 링크는 DL), ← 는 반대 방향(UL)의 e-SNR입니다." +
       (pw ? ` 필요 출력: 자동 송신출력(AGC)이 같은 MCS를 유지하면서 낮출 수 있는 출력(${state.tx} dBm에서 시작, 하한 ${P.tx_power_min_dbm} dBm).` : "");
-    t.append(cap);
   }
   function renderMatrix() {
     const t = $("cmat"); t.replaceChildren();
@@ -1184,7 +1281,7 @@ table.opts .path { white-space: normal; word-break: break-word; }
     try { const k = localStorage.getItem("autorelay.region"); if (k && regions.some((r) => r.id === k)) first = k; } catch {}
     await loadRegion(first);
     try { db = window.claude && window.claude.use ? await window.claude.use("db") : null; } catch { db = null; }
-    $("rq").closest(".line").hidden = $("rqnote").hidden = !db;  // region requests go through Claude
+    $("rqbox").hidden = !db;  // region requests go through Claude
     renderStatus();
     subscribe();
   })();
