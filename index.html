@@ -86,6 +86,9 @@ select, .field input[type="search"] {
 .stage img, .stage svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 .stage canvas { position: absolute; display: block; }
 .stage img { image-rendering: auto; }
+.tiles { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.tiles img { position: absolute; display: block; max-width: none; inset: auto; user-select: none; }
+.basemaps button { height: 32px; font-family: var(--font-body); }
 #heat { opacity: .62; image-rendering: pixelated; }
 .pin { position: absolute; width: 0; height: 0; z-index: 3; cursor: grab; }
 .pin i {
@@ -250,6 +253,7 @@ details.card.help { padding: 12px 14px; border-top: 1px solid var(--line); }
         <button class="iconbtn" id="zin" type="button" aria-label="확대">+</button>
         <button class="iconbtn" id="zout" type="button" aria-label="축소">−</button>
         <button class="iconbtn" id="zfit" type="button">전체</button>
+        <div class="seg basemaps" id="bmseg" role="group" aria-label="배경 지도" hidden></div>
         <span class="sp"></span>
         <button class="iconbtn" id="lnkbtn" type="button" aria-pressed="true">링크 e-SNR</button>
         <button class="iconbtn" id="heatbtn" type="button" aria-pressed="true">드론 효과</button>
@@ -257,6 +261,7 @@ details.card.help { padding: 12px 14px; border-top: 1px solid var(--line); }
       <div class="viewport" id="vp">
         <div class="stage" id="stage">
           <img id="mapimg" alt="" draggable="false">
+          <div id="tiles" class="tiles" hidden></div>
           <canvas id="heat" width="1" height="1"></canvas>
           <svg id="links" viewBox="0 0 1000 1000" aria-hidden="true"></svg>
         </div>
@@ -427,6 +432,7 @@ details.card.help { padding: 12px 14px; border-top: 1px solid var(--line); }
     stage.querySelectorAll(".pin").forEach((p) => { p.style.transform = `scale(${inv})`; });
     $("links").style.setProperty("--inv", inv);
     drawLinks();
+    scheduleTiles();
   }
   function zoomAt(factor, cx, cy) {
     const s0 = view.s, s1 = Math.min(Math.max(s0 * factor, view.fit), view.fit * 16);
@@ -434,6 +440,92 @@ details.card.help { padding: 12px 14px; border-top: 1px solid var(--line); }
     view.ty = cy - (cy - view.ty) * s1 / s0;
     view.s = s1;
     applyView();
+  }
+  // ---------------- background map: the region's OSM picture, or web-map tiles (VWorld aerial photos) over it
+  // Tiles are EPSG:3857 / GoogleMapsCompatible like the picture (picture px -> global px at GEO.zoom by GEO.T), so a
+  // tile z/x/y covers picture px ((x * 256 / 2^(z - Z)) - c) / a ... Only the display changes; water and terrain do not.
+  const VWORLD = "https://api.vworld.kr/req/wmts/1.0.0/{key}";
+  let SITE = {}, basemap = "map", BASEMAPS = [{ id: "map", label: "지도" }];
+  const tileEls = new Map();
+  let tileTimer = 0, tileErr = 0, tileOk = 0;
+  function setupBasemaps() {
+    const key = SITE.vworld_key || "";
+    BASEMAPS = [{ id: "map", label: "지도" }];
+    if (Array.isArray(SITE.basemaps)) BASEMAPS.push(...SITE.basemaps);
+    else if (key) BASEMAPS.push(
+      { id: "sat", label: "항공사진", layers: [VWORLD + "/Satellite/{z}/{y}/{x}.jpeg"], minZoom: 6, maxZoom: 19, attrib: "항공사진 © 국토교통부 브이월드" },
+      { id: "hyb", label: "항공+지명", layers: [VWORLD + "/Satellite/{z}/{y}/{x}.jpeg", VWORLD + "/Hybrid/{z}/{y}/{x}.png"], minZoom: 6, maxZoom: 19,
+        attrib: "항공사진·지명 © 국토교통부 브이월드" });
+    // the claude.ai viewer only loads the page's own files, so web-map tiles are for the published site
+    const usable = BASEMAPS.length > 1 && !window.claude;
+    $("bmseg").hidden = !usable;
+    if (!usable) basemap = "map";
+    else { try { const k = localStorage.getItem("autorelay.basemap"); if (BASEMAPS.some((b) => b.id === k)) basemap = k; } catch {} }
+    renderBasemaps();
+  }
+  function renderBasemaps() {
+    const host = $("bmseg"); host.replaceChildren();
+    for (const b of BASEMAPS) {
+      const el = document.createElement("button"); el.type = "button"; el.id = "bm-" + b.id; el.textContent = b.label;
+      el.setAttribute("aria-pressed", String(b.id === basemap));
+      el.addEventListener("click", () => setBasemap(b.id)); host.append(el);
+    }
+  }
+  function setBasemap(id) {
+    basemap = id; tileErr = tileOk = 0;
+    try { localStorage.setItem("autorelay.basemap", id); } catch {}
+    renderBasemaps(); updateTiles(); renderAttrib();
+  }
+  function renderAttrib() {
+    const b = BASEMAPS.find((x) => x.id === basemap);
+    $("attrib").textContent = [b && b.attrib, REGION && REGION.attribution].filter(Boolean).join(" · ");
+  }
+  function scheduleTiles() { clearTimeout(tileTimer); tileTimer = setTimeout(updateTiles, 120); }
+  function updateTiles() {
+    const bm = BASEMAPS.find((b) => b.id === basemap), box = $("tiles");
+    const on = !!(bm && bm.layers && GEO && Math.abs(GEO.T[0][1]) < 1e-9 && Math.abs(GEO.T[1][0]) < 1e-9);
+    box.hidden = !on;
+    if (!on) { for (const el of tileEls.values()) el.remove(); tileEls.clear(); return; }
+    const T = GEO.T, Z = GEO.zoom, a = T[0][0], e = T[1][1], c = T[0][2], f = T[1][2];
+    const vw = vp.clientWidth, vh = vp.clientHeight, dpr = window.devicePixelRatio || 1;
+    const vis = [Math.max(0, -view.tx / view.s), Math.min(W, (vw - view.tx) / view.s),
+                 Math.max(0, -view.ty / view.s), Math.min(H, (vh - view.ty) / view.s)];
+    const range = (z, [uA, uB, vA, vB]) => {
+      const k = 2 ** (z - Z), n = 2 ** z;
+      return [Math.max(0, Math.floor((uA * a + c) * k / 256)), Math.min(n - 1, Math.floor(((uB * a + c) * k - 1e-6) / 256)),
+              Math.max(0, Math.floor((vA * e + f) * k / 256)), Math.min(n - 1, Math.floor(((vB * e + f) * k - 1e-6) / 256))];
+    };
+    const count = (r) => (r[1] - r[0] + 1) * (r[3] - r[2] + 1);
+    const want = new Map();
+    const add = (z, rect) => {
+      const [x0, x1, y0, y1] = range(z, rect);
+      for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) bm.layers.forEach((tpl, li) => want.set(`${li}/${z}/${x}/${y}`, { li, z, x, y, tpl }));
+    };
+    // a coarse underlay for the whole region, then the visible part at the screen's resolution
+    const zb = Math.min(bm.maxZoom, Math.max(bm.minZoom ?? 0, Z - Math.max(0, Math.ceil(Math.log2(Math.max(W, H) * a / 1024)))));
+    add(zb, [0, W, 0, H]);
+    let z = Math.min(bm.maxZoom, Math.max(zb, Z + Math.round(Math.log2(view.s * dpr / a))));
+    while (z > zb && count(range(z, vis)) > 240) z--;
+    if (z > zb) add(z, vis);
+    for (const [k, el] of tileEls) if (!want.has(k)) { el.remove(); tileEls.delete(k); }
+    for (const [k, t] of want) {
+      if (tileEls.has(k)) continue;
+      const kz = 2 ** (t.z - Z), img = document.createElement("img");
+      img.alt = ""; img.draggable = false; img.decoding = "async";
+      img.style.left = ((t.x * 256 / kz - c) / a) + "px"; img.style.top = ((t.y * 256 / kz - f) / e) + "px";
+      img.style.width = (256 / kz / a) + "px"; img.style.height = (256 / kz / e) + "px";
+      img.style.zIndex = String(t.z * 4 + t.li);
+      img.onload = () => { tileOk++; };
+      img.onerror = () => {
+        img.remove();
+        if (++tileErr >= 4 && tileOk === 0 && basemap !== "map") {  // nothing loads: key or registered site address
+          $("readout").textContent = "항공사진을 불러오지 못했습니다. 브이월드 인증키와 등록한 사이트 주소를 확인해 주세요.";
+          setBasemap("map");
+        }
+      };
+      img.src = t.tpl.replace("{key}", encodeURIComponent(SITE.vworld_key || "")).replace("{z}", t.z).replace("{x}", t.x).replace("{y}", t.y);
+      tileEls.set(k, img); $("tiles").append(img);
+    }
   }
   function resetView() { view.fit = fitScale(); view.s = view.fit; view.tx = 0; view.ty = 0; applyView(); }
   new ResizeObserver(() => { const r = view.s / view.fit; view.fit = fitScale(); view.s = view.fit * r; applyView(); }).observe(vp);
@@ -1191,7 +1283,9 @@ details.card.help { padding: 12px 14px; border-top: 1px solid var(--line); }
     stage.style.width = W + "px"; stage.style.height = H + "px";
     $("links").setAttribute("viewBox", `0 0 ${W} ${H}`);
     const img = $("mapimg"); img.src = `regions/${r.id}/map.png`; img.width = W; img.height = H; img.alt = r.name + " 지도";
-    $("attrib").textContent = r.attribution || "";
+    for (const el of tileEls.values()) el.remove();
+    tileEls.clear();
+    renderAttrib();
     $("pxnote").textContent = `BS ${P.heights_m.BS} m, MS ${P.heights_m.MS1} m 안테나(지면 기준). 지도 1픽셀은 약 ${Math.round(MPP)} m입니다. `;
     relayNote();
     $("region").value = r.id;
@@ -1273,6 +1367,8 @@ details.card.help { padding: 12px 14px; border-top: 1px solid var(--line); }
   // ---------------- start
   (async () => {
     try { regions = await (await fetch("regions.json")).json(); } catch { regions = []; }
+    try { SITE = await (await fetch("site.json")).json(); } catch { SITE = {}; }  // optional: {"vworld_key": "..."}
+    setupBasemaps();
     if (!regions.length) { $("statetext").textContent = "지역 목록을 불러오지 못했습니다. 새로고침해 주세요."; return; }
     const sel = $("region");
     sel.replaceChildren(...regions.map((r) => { const o = document.createElement("option"); o.value = r.id; o.textContent = r.name; return o; }));
