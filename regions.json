@@ -1,0 +1,20 @@
+[
+  {
+    "id": "seosan_osm",
+    "name": "서산 도비산·간월호",
+    "attribution": "지도 © OpenStreetMap 기여자 (ODbL) · 고도 Copernicus GLO-30",
+    "center_lonlat": [
+      126.44551277160645,
+      36.66339305390802
+    ]
+  },
+  {
+    "id": "jayeo",
+    "name": "창원 자여초등학교",
+    "attribution": "지도 © OpenStreetMap 기여자 (ODbL) · 고도 Copernicus GLO-30",
+    "center_lonlat": [
+      128.70577812194824,
+      35.27218138873965
+    ]
+  }
+]

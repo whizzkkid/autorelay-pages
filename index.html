@@ -1,0 +1,1194 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<title>AutoRelay 노드 배치</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+KR:wght@400;500;600&display=swap">
+<style>
+/* Layout: zoomable map sheet on the left, live link ledger on the right; stacks on phones */
+:root {
+  --bg: #f3f4f2;
+  --sheet: #ffffff;
+  --ink: #1d2427;
+  --muted: #5d686c;
+  --line: #d6dbd8;
+  --accent: #1f5f73;
+  --accent-ink: #ffffff;
+  --soft: #e8eeee;
+  --warn-bg: #fff1d6;
+  --warn-ink: #7a4b00;
+  --ok-ink: #2d6a3e;
+  --bs: #e5322d;
+  --ms1: #2346d8;
+  --ms2: #0f9a4a;
+  --relay: #8a3fd1;
+  --link: #14232a;
+  --font-body: "IBM Plex Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #14191b; --sheet: #1c2325; --ink: #e6ebe9; --muted: #9aa6a9; --line: #314044; --soft: #253033;
+    --accent: #6fb6c9; --accent-ink: #0d1517; --warn-bg: #3d2f12; --warn-ink: #f3cf8a; --ok-ink: #8fd3a2;
+    --bs: #ff5f57; --ms1: #6f8dff; --ms2: #3fcf7c; --relay: #b77cf0; --link: #14232a;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #14191b; --sheet: #1c2325; --ink: #e6ebe9; --muted: #9aa6a9; --line: #314044; --soft: #253033;
+  --accent: #6fb6c9; --accent-ink: #0d1517; --warn-bg: #3d2f12; --warn-ink: #f3cf8a; --ok-ink: #8fd3a2;
+  --bs: #ff5f57; --ms1: #6f8dff; --ms2: #3fcf7c; --relay: #b77cf0; --link: #14232a;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body {
+  background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15px; line-height: 1.55;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 20px 32px;
+}
+.wrap { max-width: 1240px; margin: 0 auto; display: grid; gap: 16px; }
+header h1 { font-size: 1.45rem; font-weight: 600; margin: 0; text-wrap: balance; letter-spacing: -0.01em; }
+header p { margin: 4px 0 0; color: var(--muted); max-width: 72ch; }
+.layout { display: grid; grid-template-columns: minmax(0, 1fr) 390px; gap: 16px; align-items: start; }
+@media (max-width: 900px) { .layout { grid-template-columns: minmax(0, 1fr); } }
+.sheet { background: var(--sheet); border: 1px solid var(--line); border-radius: 6px; min-width: 0; }
+
+/* map */
+.mapbox { padding: 10px; display: grid; gap: 8px; }
+.toolbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.toolbar .sp { flex: 1; }
+.iconbtn {
+  font: 500 .9rem var(--font-body); min-width: 34px; height: 32px; padding: 0 10px; border-radius: 5px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--sheet); color: var(--ink);
+}
+.iconbtn[aria-pressed="true"] { background: var(--soft); border-color: var(--accent); color: var(--accent); }
+.viewport {
+  position: relative; width: 100%; aspect-ratio: 1 / 1; max-height: 78vh; overflow: hidden; border-radius: 4px;
+  background: var(--soft); touch-action: none; cursor: crosshair; user-select: none; margin: 0 auto;
+}
+.viewport.panning { cursor: grabbing; }
+.stage { position: absolute; left: 0; top: 0; width: 1000px; height: 1000px; transform-origin: 0 0; }
+.region { display: grid; gap: 8px; }
+.region select, .region input {
+  font: inherit; color: var(--ink); background: var(--sheet); border: 1px solid var(--line); border-radius: 5px;
+  padding: 6px 8px; min-width: 0;
+}
+.region .line { display: flex; gap: 6px; flex-wrap: wrap; }
+.region .line > * { flex: 1 1 160px; }
+.region .line .btn { flex: 0 0 auto; }
+.attrib { font-size: .72rem; color: var(--muted); text-align: right; }
+.stage img, .stage svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.stage canvas { position: absolute; display: block; }
+.stage img { image-rendering: auto; }
+#heat { opacity: .5; image-rendering: pixelated; }
+.pin {
+  position: absolute; width: 0; height: 0; z-index: 3; cursor: grab;
+}
+.pin i {
+  position: absolute; left: -10px; top: -10px; width: 20px; height: 20px; border-radius: 50%;
+  background: var(--c); border: 3px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.5);
+}
+.pin span {
+  position: absolute; left: 12px; top: -22px; font: 600 12px/1 var(--font-body); color: #111; white-space: nowrap;
+  background: rgba(255,255,255,.94); padding: 3px 5px; border-radius: 3px; border: 1px solid rgba(0,0,0,.25);
+}
+.pin.relay i { border-radius: 3px; transform: rotate(45deg); }
+.pin.auto { pointer-events: none; }
+.readout {
+  font: 12.5px/1.4 var(--font-mono); color: var(--muted); font-variant-numeric: tabular-nums;
+  display: flex; flex-wrap: wrap; gap: 4px 14px; min-height: 1.4em; justify-content: center; text-align: center;
+}
+.legend { display: flex; align-items: center; gap: 8px; font-size: .8rem; color: var(--muted); justify-content: center; flex-wrap: wrap; }
+.legend .bar { width: 140px; height: 9px; border-radius: 2px; background: linear-gradient(90deg, #2b1a4e, #6a2c8a, #c0477a, #f08a4b, #f9e07a); }
+
+/* panel */
+.panel { padding: 14px; display: grid; gap: 14px; }
+.panel h2 { font-size: .76rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0; font-weight: 600; }
+.group { display: grid; gap: 8px; }
+.nodes { display: grid; gap: 6px; }
+.node {
+  text-align: left; font: inherit; color: inherit; background: transparent; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 5px; padding: 8px 10px; display: grid; gap: 2px;
+}
+.node:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.node[aria-checked="true"] { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+.node .top { display: flex; align-items: center; gap: 8px; }
+.dot { width: 11px; height: 11px; border-radius: 50%; background: var(--c); flex: none; }
+.dot.sq { border-radius: 2px; transform: rotate(45deg); }
+.node .name { font-weight: 600; }
+.node .h { color: var(--muted); font-size: .82rem; }
+.node .hint { margin-left: auto; font-size: .76rem; color: var(--accent); font-weight: 500; }
+.coord { font: 12px/1.45 var(--font-mono); font-variant-numeric: tabular-nums; word-break: break-all; }
+.coord.empty { color: var(--muted); font-family: var(--font-body); }
+.chip { display: inline-block; font-size: .74rem; padding: 1px 7px; border-radius: 999px; background: var(--warn-bg); color: var(--warn-ink); width: fit-content; }
+.seg { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.seg .lab { font-size: .85rem; color: var(--muted); min-width: 72px; }
+.seg button {
+  font: 500 .85rem var(--font-mono); padding: 4px 10px; border-radius: 5px; cursor: pointer;
+  border: 1px solid var(--line); background: transparent; color: var(--ink);
+}
+.seg button[aria-pressed="true"] { border-color: var(--accent); background: var(--soft); color: var(--accent); }
+
+.result { display: grid; gap: 6px; }
+.row { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 4px 10px; align-items: baseline; }
+.row .k { color: var(--muted); font-size: .85rem; }
+.topo { font-weight: 600; font-family: var(--font-mono); }
+.rate { font-variant-numeric: tabular-nums; }
+.desc { color: var(--muted); font-size: .82rem; font-family: var(--font-mono); word-break: break-word; }
+.gain { font-weight: 600; color: var(--ok-ink); }
+.state { font-size: .8rem; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+.state .bar { flex: 1; height: 3px; background: var(--soft); border-radius: 2px; overflow: hidden; }
+.state .bar b { display: block; height: 100%; width: 0; background: var(--accent); }
+.tablewrap { overflow-x: auto; }
+table { border-collapse: collapse; font: 12.5px/1.3 var(--font-mono); font-variant-numeric: tabular-nums; width: 100%; }
+th, td { padding: 4px 6px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th { color: var(--muted); font-weight: 500; }
+th:first-child, td:first-child { text-align: left; }
+td.bad { color: var(--warn-ink); }
+td.na { color: var(--muted); }
+table.links td.name { font-weight: 600; }
+table.links tr.used td.name { color: var(--accent); }
+table.links .st { display: block; font-family: var(--font-body); font-size: .74rem; font-weight: 400; color: var(--muted); white-space: normal; }
+table.links tr.unused td { color: var(--muted); }
+table.links tr.unused td.bad { color: var(--warn-ink); }
+table.opts td, table.opts th { text-align: left; }
+table.cmat th, table.cmat td { text-align: center; }
+table.cmat td.self { color: var(--muted); }
+table.cmat td.inf { color: var(--warn-ink); }
+table.cmat td.on { color: var(--accent); font-weight: 600; }
+table.cmat td.lft, table.cmat th.lft { text-align: left; }
+.seg.slider input[type="range"] { flex: 1 1 140px; accent-color: var(--accent); min-width: 0; }
+.seg.slider output { font: 500 .9rem var(--font-mono); min-width: 52px; text-align: right; font-variant-numeric: tabular-nums; }
+.tbl { display: grid; gap: 6px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 5px; }
+.seg input.num { width: 5.2em; font: 500 .85rem var(--font-mono); color: var(--ink); background: var(--sheet); border: 1px solid var(--line); border-radius: 5px; padding: 4px 6px; text-align: right; }
+.seg .unit { font-size: .8rem; color: var(--muted); margin-right: 10px; }
+.seg input.num.sm { width: 4.2em; margin-right: 2px; }
+table.airtime input { width: 4.2em; font: inherit; color: var(--ink); background: var(--sheet); border: 1px solid var(--line); border-radius: 4px; padding: 2px 4px; text-align: right; }
+table.opts td.r { text-align: right; }
+table.opts tr.alt { cursor: pointer; }
+table.opts tr.alt:hover td { background: var(--soft); }
+table.opts tr.alt[aria-selected="true"] td { background: var(--soft); box-shadow: inset 0 -2px 0 var(--accent); }
+table.opts tr.sub th { padding-top: 10px; color: var(--ink); font-family: var(--font-body); font-weight: 600; font-size: .8rem; }
+table.opts .pick { font: 600 .7rem var(--font-body); color: var(--accent-ink); background: var(--accent); border-radius: 3px; padding: 1px 5px; margin-left: 4px; }
+table.opts .path { white-space: normal; word-break: break-word; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.btn {
+  font: 500 .9rem var(--font-body); border-radius: 5px; padding: 7px 13px; cursor: pointer;
+  border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink);
+}
+.btn.ghost { background: transparent; color: var(--accent); }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.status { font-size: .84rem; color: var(--muted); }
+.status.ok { color: var(--ok-ink); }
+.status.err { color: var(--warn-ink); }
+.note { color: var(--muted); font-size: .8rem; margin: 0; }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1 id="h1">노드 배치</h1>
+    <p>노드를 고르고 지도를 누르거나, 찍힌 점을 끌어서 옮기세요. BS·MS는 지면에만, 드론 중계기(R)는 수면 위에도 놓을 수 있습니다. 링크 e-SNR과 토폴로지는 옮기는 즉시 바뀌고, 최적 중계 위치는 손을 떼면 다시 계산합니다. 계산식은 Python 프레임워크와 같습니다(1.5 GHz, 채널 7 MHz 중 유효 대역폭 6 MHz, 수신감도 기준 e-SNR, EESM, 양방향 평균 e-SNR의 점유시간 표로 다익스트라).</p>
+  </header>
+
+  <div class="layout">
+    <section class="sheet mapbox" aria-label="지도">
+      <div class="toolbar">
+        <button class="iconbtn" id="zin" type="button" aria-label="확대">+</button>
+        <button class="iconbtn" id="zout" type="button" aria-label="축소">−</button>
+        <button class="iconbtn" id="zfit" type="button">전체</button>
+        <span class="sp"></span>
+        <button class="iconbtn" id="lnkbtn" type="button" aria-pressed="true">링크 e-SNR</button>
+        <button class="iconbtn" id="heatbtn" type="button" aria-pressed="true">중계 전송률 지도</button>
+      </div>
+      <div class="viewport" id="vp">
+        <div class="stage" id="stage">
+          <img id="mapimg" alt="" draggable="false">
+          <canvas id="heat" width="1" height="1"></canvas>
+          <svg id="links" viewBox="0 0 1000 1000" aria-hidden="true"></svg>
+        </div>
+      </div>
+      <div class="legend" id="legend" hidden><span>중계기를 두었을 때 MS당 전송률</span><span id="lgmin">낮음</span><span class="bar"></span><span id="lgmax">높음</span></div>
+      <div class="readout" id="readout">휠·두 손가락으로 확대, 끌어서 이동합니다</div>
+      <div class="attrib" id="attrib"></div>
+    </section>
+
+    <aside class="sheet panel">
+      <div class="group region">
+        <h2>지역</h2>
+        <select id="region" aria-label="지역"></select>
+        <div class="line">
+          <input id="rq" type="search" placeholder="새 지역 검색 (예: 단양 도담삼봉)" aria-label="새 지역 검색">
+          <button class="btn ghost" id="rqbtn" type="button">요청</button>
+        </div>
+        <p class="note" id="rqnote">이 페이지는 외부 지도·고도 서버에 직접 접속할 수 없습니다. 요청을 남기고 채팅에서 "지역 추가해줘"라고 하시면 Claude가 OpenStreetMap 지도와 Copernicus 고도 자료를 받아 목록에 넣습니다.</p>
+      </div>
+
+      <div class="group">
+        <h2>노드</h2>
+        <div class="nodes" id="nodes" role="radiogroup" aria-label="찍을 노드"></div>
+      </div>
+
+      <div class="group">
+        <h2>조건</h2>
+        <div class="seg" id="txseg"><span class="lab">최대 송신출력</span></div>
+        <div class="seg"><label class="lab" for="sens">수신감도</label><input class="num" id="sens" type="number" step="1" inputmode="decimal"><span class="unit">dBm</span><label class="lab" for="beta">EESM β</label><input class="num" id="beta" type="number" step="0.1" min="0.1" inputmode="decimal"></div>
+        <div class="seg"><span class="lab">케이블 손실</span><label class="unit" for="cabBS">BS</label><input class="num sm" id="cabBS" type="number" step="0.5" min="0" inputmode="decimal"><label class="unit" for="cabMS">MS</label><input class="num sm" id="cabMS" type="number" step="0.5" min="0" inputmode="decimal"><label class="unit" for="cabR">드론</label><input class="num sm" id="cabR" type="number" step="0.5" min="0" inputmode="decimal"><span class="unit">dB</span></div>
+        <div class="seg slider"><label class="lab" for="fade">페이딩 여유</label><input id="fade" type="range" min="0" max="15" step="0.5" value="7"><output id="fadeout" for="fade">7 dB</output></div>
+        <div class="seg" id="fseg"><span class="lab">여유 기준</span></div>
+        <p class="note" id="radionote"></p>
+        <div class="seg slider"><label class="lab" for="hR">드론 높이</label><input id="hR" type="range" min="2" max="150" step="1" value="10"><output id="hRout" for="hR">10 m</output></div>
+        <div class="seg" id="wseg"><span class="lab">수면 위 중계</span></div>
+        <div class="seg" id="rseg"><span class="lab">위치 오차 반경</span></div>
+        <div class="tbl" id="tblbox" hidden>
+          <div class="tablewrap"><table class="airtime" id="airtab" aria-label="채널 점유시간 표"></table></div>
+          <div class="seg" id="bseg"><span class="lab">0 dB 미만</span></div>
+          <p class="note" id="tblnote"></p>
+        </div>
+      </div>
+
+      <div class="group">
+        <h2>링크별 e-SNR (다익스트라 입력)</h2>
+        <div class="tablewrap"><table class="links" id="tab" aria-label="링크별 e-SNR"></table></div>
+        <h2>채널 점유시간 표 (다익스트라 비용)</h2>
+        <div class="tablewrap"><table class="cmat" id="cmat" aria-label="채널 점유시간 표"></table></div>
+        <p class="note" id="costnote"></p>
+      </div>
+
+      <div class="group">
+        <h2>결과</h2>
+        <div class="result" id="result"></div>
+        <div class="tablewrap"><table class="cmat" id="routes" aria-label="통제국까지 최단 경로"></table></div>
+        <div class="state" id="state"><span id="statetext">지형 자료를 불러오는 중</span><span class="bar"><b id="prog"></b></span></div>
+      </div>
+
+      <div class="group">
+        <h2>토폴로지 비교</h2>
+        <p class="note">다익스트라가 비교한 후보입니다. MS가 다른 MS를 중계하는 경우(BS→MS1→MS2, BS→MS2→MS1)도 들어 있습니다. 비용은 두 MS 경로 비용의 합이라, 중계하는 MS 앞 링크는 두 MS의 데이터를 실어 두 번 들어갑니다. 줄을 누르면 지도에 그 경로를 그립니다.</p>
+        <div class="tablewrap"><table class="opts" id="opts"></table></div>
+      </div>
+
+      <div class="actions">
+        <button class="btn" id="save" type="button" disabled>위치 저장</button>
+        <button class="btn ghost" id="copy" type="button">명령 복사</button>
+        <button class="btn ghost" id="load" type="button" hidden>불러오기</button>
+        <input id="loadfile" type="file" accept="application/json,.json" hidden>
+        <span class="status" id="status" role="status"></span>
+      </div>
+      <p class="note"><span id="pxnote"></span> <span id="relaynote"></span> 손을 떼면 100 m 격자로 먼저 보여 준 뒤 설정 격자로 다듬습니다. 같은 위치를 Python으로 계산한 값과 e-SNR 차이 중앙값은 0.002 dB입니다.</p>
+    </aside>
+  </div>
+</div>
+
+<script src="engine.js"></script>
+<script>
+(() => {
+  const E = window.AutoRelayEngine;
+  const $ = (id) => document.getElementById(id);
+  if (!E) { $("statetext").textContent = "계산 엔진을 불러오지 못했습니다. 새로고침해 주세요."; return; }
+  // region-dependent (set by loadRegion)
+  let REGION = null, TD = null, W = 1, H = 1, MPP = 1, GEO = null, P = null, model = null, NPX = 1;
+  let NODES = [];
+  const TXS = [40, 30, 10], HMIN = 2, HMAX = 150;
+  const FADES = [[0, "없음 0"], [7, "고정 7"], [10, "이동 10"]];  // dB: none, fixed sites (P.1546 5.5 dB x 1.28), mobile MS (+3 dB)
+  const state = {
+    sel: "BS", pos: {}, tx: null, hR: 10, relayMode: "auto", relayManual: null,
+    dirty: false, savedAt: null, heat: true,
+    live: null,       // {tab, info, base}
+    relay: null,      // {step, grid, rate, robust, usesRelay, best, cands, xy, final_table, final}
+    manual: null,     // {final_table, final} for a hand-placed relay
+    preview: null,    // description of a compared tree drawn on the map
+    showLinks: true,  // every link with its e-SNR on the map
+    onWater: null,    // relay (drone) candidates over water (null: the region config's)
+    snr: null,        // edited UL MCS thresholds [dB] of the airtime table (null: config)
+    below: null,      // airtime table below the lowest threshold: lowest | unusable (null: config)
+    beta: null,       // EESM beta (null: config)
+    sens: null,       // receiver sensitivity [dBm] (null: config)
+    cab: null,        // cable loss per node [dB] (null: config)
+    fade: null,       // fade margin [dB] (null: config)
+    robust: null,     // drone placement-error radius [m]; 0 = rank by the Dijkstra cost alone (null: config)
+  };
+
+  // ---------------- geometry
+  function lonlat(u, v) {
+    const T = GEO.T, gx = T[0][0] * u + T[0][1] * v + T[0][2], gy = T[1][0] * u + T[1][1] * v + T[1][2];
+    return { lon: gx / NPX * 360 - 180, lat: Math.atan(Math.sinh(Math.PI * (1 - 2 * gy / NPX))) * 180 / Math.PI };
+  }
+  const toM = (u, v) => ({ x: u * MPP, y: (H - v) * MPP });
+  const fromM = (x, y) => ({ u: x / MPP, v: H - y / MPP });
+  const groundAt = (u, v) => { const m = toM(u, v); return E.groundAt(model, m.x, m.y); };
+  const onWater = (u, v) => model.water[Math.min(H - 1, Math.max(0, Math.floor(v))) * W + Math.min(W - 1, Math.max(0, Math.floor(u)))] === 1;
+  const OLC = "23456789CFGHJMPQRVWX";
+  function plusCode(lat, lon) {
+    let la = lat + 90, lo = lon + 180, out = "", res = 20;
+    for (let i = 0; i < 5; i++) {
+      const a = Math.floor(la / res), b = Math.floor(lo / res);
+      la -= a * res; lo -= b * res; out += OLC[a] + OLC[b];
+      if (i === 3) out += "+";
+      res /= 20;
+    }
+    const hl = 0.000125 / 5, hn = 0.000125 / 4;
+    return out + OLC[Math.min(4, Math.floor(la / hl)) * 4 + Math.min(3, Math.floor(lo / hn))];
+  }
+  const f6 = (x) => x.toFixed(6), f1 = (x) => (Math.abs(x) < 0.05 ? 0 : x).toFixed(1);
+  const mbps = (b) => (b >= 1e7 ? (b / 1e6).toFixed(1) + " Mb/s" : b >= 1e5 ? (b / 1e6).toFixed(2) + " Mb/s"
+    : b >= 1e3 ? (b / 1e3).toFixed(b >= 1e4 ? 0 : 1) + " kb/s" : Math.round(b) + " b/s");
+
+  // ---------------- zoom / pan
+  const vp = $("vp"), stage = $("stage");
+  const view = { s: 1, tx: 0, ty: 0, fit: 1 };
+  function fitScale() { return Math.min(vp.clientWidth / W, vp.clientHeight / H); }
+  function clampView() {
+    const vw = vp.clientWidth, vh = vp.clientHeight, sw = W * view.s, sh = H * view.s;
+    view.tx = sw <= vw ? (vw - sw) / 2 : Math.min(0, Math.max(vw - sw, view.tx));
+    view.ty = sh <= vh ? (vh - sh) / 2 : Math.min(0, Math.max(vh - sh, view.ty));
+  }
+  function applyView() {
+    clampView();
+    stage.style.transform = `translate(${view.tx}px, ${view.ty}px) scale(${view.s})`;
+    const inv = 1 / view.s;
+    stage.querySelectorAll(".pin").forEach((p) => { p.style.transform = `scale(${inv})`; });
+    $("links").style.setProperty("--inv", inv);
+    drawLinks();
+  }
+  function zoomAt(factor, cx, cy) {
+    const s0 = view.s, s1 = Math.min(Math.max(s0 * factor, view.fit), view.fit * 16);
+    view.tx = cx - (cx - view.tx) * s1 / s0;
+    view.ty = cy - (cy - view.ty) * s1 / s0;
+    view.s = s1;
+    applyView();
+  }
+  function resetView() { view.fit = fitScale(); view.s = view.fit; view.tx = 0; view.ty = 0; applyView(); }
+  new ResizeObserver(() => { const r = view.s / view.fit; view.fit = fitScale(); view.s = view.fit * r; applyView(); }).observe(vp);
+  vp.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const r = vp.getBoundingClientRect();
+    zoomAt(Math.exp(-e.deltaY * (e.deltaMode === 1 ? 0.05 : 0.0018)), e.clientX - r.left, e.clientY - r.top);
+  }, { passive: false });
+  $("zin").addEventListener("click", () => zoomAt(1.6, vp.clientWidth / 2, vp.clientHeight / 2));
+  $("zout").addEventListener("click", () => zoomAt(1 / 1.6, vp.clientWidth / 2, vp.clientHeight / 2));
+  $("zfit").addEventListener("click", resetView);
+  const clientToPic = (cx, cy) => { const r = stage.getBoundingClientRect(); return { u: (cx - r.left) / r.width * W, v: (cy - r.top) / r.height * H }; };
+
+  // pointer handling: tap = place, drag on map = pan, drag on a pin = move it, two fingers = pinch
+  const ptrs = new Map();
+  let gesture = null;
+  vp.addEventListener("pointerdown", (e) => {
+    if (!model) return;
+    vp.setPointerCapture(e.pointerId);
+    ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const pin = e.target.closest(".pin");
+    if (ptrs.size === 2) {
+      const [a, b] = [...ptrs.values()];
+      gesture = { kind: "pinch", d: Math.hypot(a.x - b.x, a.y - b.y), s: view.s, tx: view.tx, ty: view.ty,
+                  cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2 };
+    } else if (pin && !pin.classList.contains("auto")) {
+      gesture = { kind: "pin", key: pin.dataset.key, moved: false };
+      if (pin.dataset.key !== "R") state.sel = pin.dataset.key; else state.sel = "R";
+      renderNodes();
+    } else {
+      gesture = { kind: "tap", x0: e.clientX, y0: e.clientY, tx: view.tx, ty: view.ty };
+    }
+  });
+  vp.addEventListener("pointermove", (e) => {
+    if (!model) return;
+    const pic = clientToPic(e.clientX, e.clientY);
+    if (pic.u >= 0 && pic.u < W && pic.v >= 0 && pic.v < H) {
+      showReadout(pic.u, pic.v);
+      vp.style.cursor = state.sel !== "R" && onWater(pic.u, pic.v) && !(gesture && gesture.kind === "pan") ? "not-allowed" : "";
+    }
+    if (!ptrs.has(e.pointerId)) return;
+    ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (!gesture) return;
+    if (gesture.kind === "pinch" && ptrs.size === 2) {
+      const [a, b] = [...ptrs.values()], r = vp.getBoundingClientRect();
+      const d = Math.hypot(a.x - b.x, a.y - b.y), cx = (a.x + b.x) / 2 - r.left, cy = (a.y + b.y) / 2 - r.top;
+      const s1 = Math.min(Math.max(gesture.s * d / gesture.d, view.fit), view.fit * 16);
+      const c0x = gesture.cx - r.left, c0y = gesture.cy - r.top;
+      view.tx = cx - (c0x - gesture.tx) * s1 / gesture.s;
+      view.ty = cy - (c0y - gesture.ty) * s1 / gesture.s;
+      view.s = s1;
+      applyView();
+    } else if (gesture.kind === "tap" || gesture.kind === "pan") {
+      const dx = e.clientX - gesture.x0, dy = e.clientY - gesture.y0;
+      if (gesture.kind === "tap" && Math.hypot(dx, dy) > 5) { gesture.kind = "pan"; vp.classList.add("panning"); }
+      if (gesture.kind === "pan") { view.tx = gesture.tx + dx; view.ty = gesture.ty + dy; applyView(); }
+    } else if (gesture.kind === "pin") {
+      gesture.moved = true;
+      if (pic.u >= 0 && pic.u < W && pic.v >= 0 && pic.v < H) moveNode(gesture.key, pic.u, pic.v, true);
+    }
+  });
+  function endPointer(e) {
+    if (!ptrs.has(e.pointerId)) return;
+    ptrs.delete(e.pointerId);
+    vp.classList.remove("panning");
+    if (!gesture) return;
+    if (gesture.kind === "tap" && ptrs.size === 0) {
+      const pic = clientToPic(e.clientX, e.clientY);
+      if (pic.u >= 0 && pic.u < W && pic.v >= 0 && pic.v < H) placeSelected(pic.u, pic.v);
+    } else if (gesture.kind === "pin" && gesture.moved) {
+      scheduleRelay();
+    }
+    if (ptrs.size === 0) gesture = null;
+    else if (gesture.kind === "pinch") gesture = null;
+  }
+  vp.addEventListener("pointerup", endPointer);
+  vp.addEventListener("pointercancel", endPointer);
+  vp.addEventListener("pointerleave", () => { if (!ptrs.size) $("readout").textContent = "휠·두 손가락으로 확대, 끌어서 이동합니다"; });
+
+  function showReadout(u, v) {
+    const ll = lonlat(u, v);
+    $("readout").textContent = `${f6(ll.lat)} N  ${f6(ll.lon)} E  ·  지면 ${Math.round(groundAt(u, v))} m${onWater(u, v) ? "  ·  수면" : ""}`;
+  }
+
+  // ---------------- node placement and live link table
+  function placeSelected(u, v) {
+    if (state.sel === "R") { state.relayMode = "manual"; moveNode("R", u, v, false); return; }
+    if (onWater(u, v)) { groundOnly(state.sel); return; }
+    moveNode(state.sel, u, v, false);
+    const next = NODES.find((n) => !state.pos[n.key]);
+    if (next) state.sel = next.key;
+    renderNodes();
+  }
+  function groundOnly(key) {  // BS / MS stand on the ground only; the relay is a drone
+    $("readout").textContent = `${key}는 수면 위에 놓을 수 없습니다. BS·MS는 지면에만 배치됩니다.`;
+  }
+  let liveRaf = 0;
+  function moveNode(key, u, v, dragging) {
+    if (key !== "R" && onWater(u, v)) { groundOnly(key); return; }  // a drag stops at the shore
+    if (key === "R") state.relayManual = { u, v };
+    else state.pos[key] = { u, v };
+    state.dirty = true;
+    renderPins();
+    if (!liveRaf) liveRaf = requestAnimationFrame(() => { liveRaf = 0; computeLive(); render(); });
+    if (!dragging && key !== "R") scheduleRelay();
+  }
+  const allPlaced = () => NODES.every((n) => state.pos[n.key]);
+  function nodesM() { const o = {}; for (const n of NODES) o[n.key] = toM(state.pos[n.key].u, state.pos[n.key].v); return o; }
+  function settings() {
+    const tx = { BS: state.tx, MS1: state.tx, MS2: state.tx, R: state.tx };
+    return { heights: Object.assign({}, P.heights_m, { R: state.hR }), tx };
+  }
+  function computeLive() {
+    if (!allPlaced()) { state.live = null; state.manual = null; return; }
+    const nm = nodesM(), s = settings();
+    const { tab, info } = E.nodeTable(model, nm, s);
+    state.live = { tab, info, base: E.decide(tab, P, false) };
+    if (state.relayMode === "manual" && state.relayManual) {
+      const r = toM(state.relayManual.u, state.relayManual.v);
+      const info = {}, ft = E.finalTable(model, tab, nm, s, [r.x, r.y], info);
+      state.manual = { final_table: ft, info, final: E.decide(ft, P, true), xy: [r.x, r.y] };
+    } else state.manual = null;
+    if (state.relay) {  // keep the last relay position and update its links while nodes move
+      const info = {}, ft = E.finalTable(model, tab, nm, s, state.relay.xy, info);
+      state.relay.final_table = ft; state.relay.info = info; state.relay.final = E.decide(ft, P, true);
+    }
+  }
+
+  // ---------------- relay search on a worker pool
+  let gen = 0, pool = [], queue = [], pending = 0, jobSeq = 0, collect = null, relayTimer = 0;
+  const nWorkers = Math.max(1, Math.min(6, (navigator.hardwareConcurrency || 4) - 1));
+  function startPool() {
+    try {
+      for (let i = 0; i < nWorkers; i++) {
+        const w = new Worker("worker.js");
+        w.busy = true;  // until it has loaded the region
+        w.postMessage({ type: "init", region: REGION.id });
+        w.onmessage = (ev) => onWorker(w, ev.data);
+        w.onerror = () => { pool = pool.filter((x) => x !== w); if (w.job) queue.unshift(w.job); w.job = null; pump(); };
+        pool.push(w);
+      }
+    } catch { pool = []; }
+  }
+  function pump() {
+    for (const w of pool) {
+      if (w.busy || !queue.length) continue;
+      const j = queue.shift();
+      w.busy = true;
+      w.job = j;
+      w.postMessage(j);
+    }
+    if (!pool.length && queue.length) setTimeout(runInline, 0);  // no workers: compute here, a slice at a time
+  }
+  const inlineGrids = {};
+  function runInline() {
+    const j = queue.shift(); if (!j) return;
+    const key = j.step + "/" + j.border + "/" + j.onWater;
+    const grid = inlineGrids[key] || (inlineGrids[key] = E.candidateGrid(model, j.step, j.border, j.onWater));
+    const r = E.relayLinks(model, j.node, j.hNode, j.txNode, grid, j.i0, j.i1, j.hR, j.txR, j.cab);
+    onResult({ gen: j.gen, name: j.name, i0: j.i0, to: r.to, from: r.from });
+    if (queue.length) setTimeout(runInline, 0);
+  }
+  function onWorker(w, msg) {
+    if (msg.type === "ready") { w.busy = false; pump(); return; }
+    w.busy = false;
+    w.job = null;
+    onResult(msg);
+    pump();
+  }
+  function onResult(msg) {
+    if (!collect || msg.gen !== collect.gen) return;
+    const r = collect.rel[msg.name];
+    r.to.set(msg.to, msg.i0); r.from.set(msg.from, msg.i0);
+    collect.left--;
+    $("prog").style.width = ((1 - collect.left / collect.total) * 100).toFixed(0) + "%";
+    if (collect.left === 0) finishStage();
+  }
+  function scheduleRelay() {
+    clearTimeout(relayTimer);
+    relayTimer = setTimeout(() => runRelay([100, P.grid_m]), 120);
+  }
+  function runRelay(steps) {
+    if (!allPlaced()) {
+      const left = NODES.filter((n) => !state.pos[n.key]).map((n) => n.key);
+      $("statetext").textContent = `${left.join(", ")}를 지도에 찍어 주세요`; $("prog").style.width = "0%";
+      return;
+    }
+    gen++;
+    queue = [];
+    const step = steps[0], grid = E.candidateGrid(model, step, P.border_m, state.onWater), N = grid.x.length;
+    const nm = nodesM(), s = settings();
+    const chunk = Math.max(400, Math.ceil(N / (pool.length * 6 || 12)));
+    collect = { gen, step, rest: steps.slice(1), grid, rel: {}, total: 0, left: 0, nm, s };
+    for (const n of E.NODE_NAMES) {
+      collect.rel[n] = { to: new Float32Array(N), from: new Float32Array(N) };
+      for (let i0 = 0; i0 < N; i0 += chunk) {
+        queue.push({ type: "relay", job: ++jobSeq, gen, name: n, step, border: P.border_m, i0, i1: Math.min(N, i0 + chunk),
+                     node: nm[n], hNode: s.heights[n], txNode: s.tx[n], hR: s.heights.R, txR: s.tx.R, onWater: state.onWater,
+                     cab: E.cableDb(P, n) + E.cableDb(P, "R"),
+                     radio: { eesm_beta: P.eesm_beta, rx_sensitivity_dbm: P.rx_sensitivity_dbm, fade_margin_db: P.fade_margin_db } });
+        collect.total++;
+      }
+    }
+    collect.left = collect.total;
+    $("statetext").textContent = `중계 위치 계산 중 (${step} m 격자, 후보 ${N.toLocaleString("ko-KR")}곳)`;
+    $("prog").style.width = "0%";
+    pump();
+  }
+  function finishStage() {
+    const c = collect;
+    const tab = E.nodeTable(model, c.nm, c.s).tab;
+    const g = E.relayGrid(tab, c.rel, P);
+    const score = E.relayScore(g), robS = E.robust(c.grid, score, P.robust_radius_m);
+    const rob = Float64Array.from(robS, (v) => v - Math.floor(v / E.BIG) * E.BIG);
+    const cands = E.pickCandidates(c.grid, score, robS, P.top_k, g.margin);
+    const b = cands[0], xy = [c.grid.x[b], c.grid.y[b]];
+    const info = {}, ft = E.finalTable(model, tab, c.nm, c.s, xy, info);
+    state.relay = { gen: c.gen, step: c.step, grid: c.grid, rate: g.rate, robust: rob, usesRelay: g.usesRelay, cands, xy,
+                    final_table: ft, info, final: E.decide(ft, P, true) };
+    drawHeat();
+    if (c.rest.length) { runRelay(c.rest); }
+    else { collect = null; $("statetext").textContent = `계산 완료 (${c.step} m 격자, 후보 ${c.grid.x.length.toLocaleString("ko-KR")}곳)`; $("prog").style.width = "100%"; }
+    render();
+  }
+
+  // ---------------- drawing
+  function drawHeat() {
+    // one canvas pixel per grid cell, stretched over the cells' footprint on the picture
+    const cv = $("heat"), r = state.relay;
+    $("legend").hidden = !(r && state.heat);
+    cv.hidden = !(r && state.heat);
+    if (!r) return;
+    const { nx, ny, step } = r.grid, x0 = P.border_m, y0 = P.border_m;
+    cv.width = nx; cv.height = ny;
+    cv.style.left = (x0 / MPP / W * 100) + "%";
+    cv.style.width = (nx * step / MPP / W * 100) + "%";
+    cv.style.top = ((H - (y0 + ny * step) / MPP) / H * 100) + "%";
+    cv.style.height = (ny * step / MPP / H * 100) + "%";
+    const cx = cv.getContext("2d"), img = cx.createImageData(nx, ny);
+    let lo = Infinity, hi = -Infinity;
+    for (const v of r.rate) { if (!(v > 0)) continue; const l = Math.log10(v); if (l < lo) lo = l; if (l > hi) hi = l; }
+    if (!isFinite(lo)) { lo = 0; hi = 0; }
+    const stops = [[43, 26, 78], [106, 44, 138], [192, 71, 122], [240, 138, 75], [249, 224, 122]];
+    for (let q = 0; q < r.rate.length; q++) {
+      const t = hi > lo ? (Math.log10(r.rate[q]) - lo) / (hi - lo) : 1;
+      const f = t * (stops.length - 1), k = Math.min(stops.length - 2, Math.floor(f)), w = f - k;
+      const o = ((ny - 1 - r.grid.i[q]) * nx + r.grid.j[q]) * 4;
+      if (!(r.rate[q] > 0)) continue;  // no usable topology with the relay here (MCS cost): leave the map visible
+      for (let c = 0; c < 3; c++) img.data[o + c] = Math.round(stops[k][c] + (stops[k + 1][c] - stops[k][c]) * w);
+      img.data[o + 3] = 255;
+    }
+    cx.putImageData(img, 0, 0);
+    $("lgmin").textContent = mbps(10 ** lo);
+    $("lgmax").textContent = mbps(10 ** hi);
+  }
+  function relayPoint() {
+    if (state.relayMode === "manual" && state.relayManual) return state.relayManual;
+    if (state.relay) return fromM(state.relay.xy[0], state.relay.xy[1]);
+    return null;
+  }
+  function current() {
+    if (state.relayMode === "manual") return state.manual;
+    return state.relay;
+  }
+  // displayed topology and link table: the relay result when there is one, else the node-only decision
+  function shown() {
+    const cur = current();
+    let topo = cur ? cur.final : state.live && state.live.base;
+    if (topo && state.preview) {
+      const pool = [...(state.live ? state.live.base.alternatives : []), ...(cur ? cur.final.alternatives : [])];
+      topo = pool.find((a) => a.description === state.preview) || topo;
+    }
+    const tab = cur ? cur.final_table : state.live && state.live.tab;
+    const info = Object.assign({}, state.live ? state.live.info : {}, cur && cur.info ? cur.info : {});
+    const names = ["BS", "MS1", "MS2", ...(cur && relayPoint() ? ["R"] : [])];
+    return { topo, tab, info, names };
+  }
+  const PAIRS = [["BS", "MS1"], ["BS", "MS2"], ["MS1", "MS2"], ["R", "BS"], ["R", "MS1"], ["R", "MS2"]];
+  function linkLabel(tab, a, b) {
+    const x = tab[a + ">" + b], y = tab[b + ">" + a];
+    return Math.abs(x - y) < 0.05 ? `${f1(x)} dB` : `${f1(x)}/${f1(y)} dB`;
+  }
+  function drawLinks() {
+    const svg = $("links");
+    svg.replaceChildren();
+    if (!state.live || !allPlaced()) return;
+    const { topo, tab, names } = shown();
+    if (!topo) return;
+    const pt = (n) => (n === "R" ? relayPoint() : state.pos[n]);
+    const inv = 1 / view.s, ns = "http://www.w3.org/2000/svg";
+    const used = new Map(topo.links.map(([p, c]) => [[p, c].sort().join("|"), [p, c]]));
+    const mk = (tag, attrs) => { const e = document.createElementNS(ns, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); svg.append(e); return e; };
+    const labels = [];
+    for (const [a, b] of PAIRS) {
+      if (!names.includes(a) || !names.includes(b)) continue;
+      const A = pt(a), B = pt(b); if (!A || !B) continue;
+      const u = used.get([a, b].sort().join("|"));
+      if (!u && !state.showLinks) continue;
+      if (u) {
+        const [p, c] = u, Pp = pt(p), Cc = pt(c);
+        mk("line", { x1: Pp.u, y1: Pp.v, x2: Cc.u, y2: Cc.v, stroke: "#ffffff", "stroke-width": 5 * inv, "stroke-linecap": "round" });
+        mk("line", { x1: Pp.u, y1: Pp.v, x2: Cc.u, y2: Cc.v, stroke: "#14232a", "stroke-width": 2.2 * inv });
+        const t = 0.62, mx = Pp.u + (Cc.u - Pp.u) * t, my = Pp.v + (Cc.v - Pp.v) * t, ang = Math.atan2(Cc.v - Pp.v, Cc.u - Pp.u), s = 9 * inv;
+        const pts = [0, 2.5, -2.5].map((d) => [mx + Math.cos(ang + d) * s, my + Math.sin(ang + d) * s].join(",")).join(" ");
+        mk("polygon", { points: pts, fill: "#14232a", stroke: "#ffffff", "stroke-width": 1.2 * inv });
+      } else {
+        mk("line", { x1: A.u, y1: A.v, x2: B.u, y2: B.v, stroke: "#14232a", "stroke-opacity": 0.55, "stroke-width": 1.3 * inv,
+                     "stroke-dasharray": `${5 * inv} ${4 * inv}` });
+      }
+      if (state.showLinks) labels.push({ x: (A.u + B.u) / 2, y: (A.v + B.v) / 2, text: linkLabel(tab, a, b), used: !!u, bad: tab[a + ">" + b] < 0 });
+    }
+    for (const L of labels) {  // labels last so lines never cover them
+      const fs = 11 * inv, w = (L.text.length * 6.4 + 10) * inv, h = 16 * inv;
+      mk("rect", { x: L.x - w / 2, y: L.y - h / 2, width: w, height: h, rx: 3 * inv, fill: L.used ? "#14232a" : "#ffffff",
+                   "fill-opacity": L.used ? 0.92 : 0.9, stroke: "#14232a", "stroke-width": 0.8 * inv });
+      const t = mk("text", { x: L.x, y: L.y + fs * 0.36, "text-anchor": "middle", "font-size": fs, "font-family": "IBM Plex Mono, monospace",
+                             "font-weight": L.used ? 600 : 500, fill: L.used ? "#ffffff" : (L.bad ? "#9a4a00" : "#14232a") });
+      t.textContent = L.text;
+    }
+  }
+  function renderPins() {
+    stage.querySelectorAll(".pin").forEach((e) => e.remove());
+    const inv = 1 / view.s;
+    const add = (key, p, color, cls) => {
+      const pin = document.createElement("div");
+      pin.className = "pin" + (cls ? " " + cls : ""); pin.dataset.key = key;
+      pin.style.left = (p.u / W * 100) + "%"; pin.style.top = (p.v / H * 100) + "%";
+      pin.style.setProperty("--c", color); pin.style.transform = `scale(${inv})`;
+      const i = document.createElement("i"), t = document.createElement("span"); t.textContent = key;
+      pin.append(i, t); stage.append(pin);
+    };
+    for (const n of NODES) if (state.pos[n.key]) add(n.key, state.pos[n.key], n.c);
+    const rp = relayPoint(), cur = current();
+    if (rp && (state.relayMode === "manual" || (cur && cur.final.usesRelay))) add("R", rp, "var(--relay)", state.relayMode === "manual" ? "relay" : "relay auto");
+    drawLinks();
+  }
+  function renderNodes() {
+    const list = $("nodes");
+    const rows = NODES.map((n) => ({ key: n.key, label: n.key, h: `안테나 ${n.h} m`, c: n.c, p: state.pos[n.key] }));
+    rows.push({ key: "R", label: "R", h: state.relayMode === "manual" ? `직접 지정 · 드론 ${state.hR} m` : `자동 최적 · 드론 ${state.hR} m`, c: "var(--relay)",
+                p: relayPoint(), relay: true });
+    list.replaceChildren(...rows.map((n) => {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "node"; b.id = "node-" + n.key;
+      b.setAttribute("role", "radio"); b.setAttribute("aria-checked", String(state.sel === n.key));
+      b.style.setProperty("--c", n.c);
+      const top = document.createElement("div"); top.className = "top";
+      const dot = document.createElement("span"); dot.className = "dot" + (n.relay ? " sq" : "");
+      const name = document.createElement("span"); name.className = "name"; name.textContent = n.label;
+      const h = document.createElement("span"); h.className = "h"; h.textContent = n.h;
+      top.append(dot, name, h);
+      if (state.sel === n.key) {
+        const hint = document.createElement("span"); hint.className = "hint";
+        hint.textContent = n.relay ? "지도를 누르면 직접 지정" : "지도를 누르세요"; top.append(hint);
+      }
+      const co = document.createElement("div");
+      if (n.p) {
+        const ll = lonlat(n.p.u, n.p.v);
+        co.className = "coord"; co.style.whiteSpace = "pre-line";
+        co.textContent = `${f6(ll.lat)} N, ${f6(ll.lon)} E\n${plusCode(ll.lat, ll.lon).slice(4)} · 지면 ${Math.round(groundAt(n.p.u, n.p.v))} m`;
+      } else { co.className = "coord empty"; co.textContent = n.relay ? "계산 후 표시됩니다" : "아직 찍지 않았습니다"; }
+      b.append(top, co);
+      if (n.p && !n.relay && onWater(n.p.u, n.p.v)) { const w = document.createElement("span"); w.className = "chip"; w.textContent = "수면 위입니다"; b.append(w); }
+      if (n.relay && state.relayMode === "manual") {
+        const back = document.createElement("span"); back.className = "chip"; back.style.cursor = "pointer";
+        back.textContent = "자동 최적 위치로 돌아가기";
+        back.addEventListener("click", (e) => { e.stopPropagation(); state.relayMode = "auto"; state.relayManual = null; computeLive(); render(); });
+        b.append(back);
+      }
+      b.addEventListener("click", () => {
+        state.sel = n.key; renderNodes();
+        const r = vp.getBoundingClientRect();  // phones: the map is above the panel, bring it back into view
+        if (r.top < 0 || r.bottom > window.innerHeight) vp.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
+      return b;
+    }));
+  }
+  function renderSegs() {
+    const mk = (host, vals, cur, on) => {
+      host.querySelectorAll("button").forEach((x) => x.remove());
+      for (const [v, label] of vals) {
+        const b = document.createElement("button"); b.type = "button"; b.id = host.id + "-" + v;
+        b.textContent = label; b.setAttribute("aria-pressed", String(v === cur));
+        b.addEventListener("click", () => on(v)); host.append(b);
+      }
+    };
+    const redo = () => { state.dirty = true; computeLive(); render(); scheduleRelay(); };
+    mk($("txseg"), TXS.map((v) => [v, v + " dBm"]), state.tx, (v) => { state.tx = v; redo(); });
+    for (const [id, v] of [["sens", P.rx_sensitivity_dbm], ["beta", P.eesm_beta]]) if (document.activeElement !== $(id)) $(id).value = v == null ? "" : String(v);
+    $("sens").disabled = P.rx_sensitivity_dbm == null;
+    for (const [id, n] of [["cabBS", "BS"], ["cabMS", "MS1"], ["cabR", "R"]]) if (document.activeElement !== $(id)) $(id).value = String(E.cableDb(P, n));
+    const fd = P.fade_margin_db || 0;
+    if (document.activeElement !== $("fade")) $("fade").value = String(fd);
+    $("fadeout").textContent = fd + " dB";
+    mk($("fseg"), FADES.map(([v, label]) => [v, label]), fd, (v) => setFade(v, true));
+    $("radionote").textContent = P.rx_sensitivity_dbm != null
+      ? `e-SNR = 수신전력 − 수신감도 + ${P.sensitivity_snr_db || 0} dB (수신감도에서 MCS${P.airtime ? P.airtime.mcs[0] : 1} 하한). 송신출력은 자동(AGC)이라 최대 출력으로 계산하고, 링크 표에 같은 MCS를 유지하는 최소 출력(하한 ${P.tx_power_min_dbm ?? "-"} dBm)을 보여 줍니다.`
+      : `잡음 = kTB + 잡음지수 ${P.noise_figure_db} dB.`;
+    $("radionote").textContent += ` 케이블 손실은 무전기 단자~안테나 구간입니다(기본값: LMR-400급 0.17 dB/m, BS 약 15 m·MS 2 m·드론 짧은 점퍼, 커넥터 0.2 dB/개). 페이딩 여유는 모든 링크 e-SNR에서 뺍니다: 고정 운용 7 dB = ITU-R P.1546 위치 변동 표준편차 5.5 dB × 1.28(90 % 위치 신뢰), MS 이동 운용은 다중경로 몫 3 dB를 더해 10 dB. 현장 측정으로 모델 오차를 맞추면 줄일 수 있습니다.`;
+    mk($("wseg"), [[true, "허용"], [false, "제외"]], state.onWater, (v) => { state.onWater = v; P.relay_on_water = v; redo(); });
+    mk($("rseg"), [[0, "0 (비용만)"], [50, "50 m"], [100, "100 m"], [200, "200 m"]], P.robust_radius_m,
+       (v) => { P.robust_radius_m = state.robust = v; relayNote(); state.dirty = true; render(); scheduleRelay(); });
+    const hr = $("hR");
+    if (document.activeElement !== hr) hr.value = String(state.hR);
+    $("hRout").textContent = state.hR + " m";
+    renderAirtime();
+  }
+  function renderAirtime() {
+    const box = $("tblbox"), A = P.airtime;
+    box.hidden = !A;
+    if (box.hidden) return;
+    const t = $("airtab"); t.replaceChildren();
+    const cell = (tag, txt, cls) => { const c = document.createElement(tag); if (cls) c.className = cls; c.textContent = txt; return c; };
+    const hr = document.createElement("tr");
+    hr.append(cell("th", "MCS"), cell("th", "속도 Mb/s"), cell("th", "점유시간"), cell("th", P.traffic === "mean" ? "평균 e-SNR ≥ dB" : "UL e-SNR ≥ dB"));
+    const thead = document.createElement("thead"); thead.append(hr); t.append(thead);
+    const tb = document.createElement("tbody");
+    A.mcs.forEach((m, i) => {
+      const r = document.createElement("tr");
+      const inp = document.createElement("input"); inp.type = "number"; inp.step = "0.5"; inp.id = "thr-" + m; inp.value = String(A.snr_db[i]);
+      inp.setAttribute("aria-label", `MCS${m} 요구 e-SNR`);
+      inp.addEventListener("change", () => {
+        const v = parseFloat(inp.value); if (!isFinite(v)) { inp.value = String(A.snr_db[i]); return; }
+        A.snr_db[i] = v; state.snr = A.snr_db.slice(); state.dirty = true; computeLive(); render(); scheduleRelay();
+      });
+      const c4 = cell("td", ""); c4.append(inp);
+      r.append(cell("td", `MCS${m}${i === A.dl_index ? " (DL)" : ""}`), cell("td", A.rate_mbps[i].toFixed(3), "r"), cell("td", String(A.airtime[i]), "r"), c4);
+      tb.append(r);
+    });
+    t.append(tb);
+    const lo = A.snr_db[0];
+    const bs = $("bseg"); bs.querySelector(".lab").textContent = `${lo} dB 미만`;
+    bs.querySelectorAll("button").forEach((x) => x.remove());
+    for (const [v, label] of [["lowest", `MCS${A.mcs[0]}로 사용`], ["unusable", "사용 불가"]]) {
+      const b = document.createElement("button"); b.type = "button"; b.id = "bseg-" + v; b.textContent = label;
+      b.setAttribute("aria-pressed", String(A.below_lowest === v));
+      b.addEventListener("click", () => { A.below_lowest = v; state.below = v; state.dirty = true; computeLive(); render(); scheduleRelay(); });
+      bs.append(b);
+    }
+    const ul = P.traffic === "uplink", dl = A.airtime[A.dl_index];
+    const head = P.traffic === "mean" ? "링크 비용 = 양방향 e-SNR 평균으로 정한 MCS의 점유시간(자기 자신 0, 링크 없음 ∞)." : ul ? "토폴로지는 UL만 고려합니다: 링크 비용 = UL 점유시간(UL e-SNR로 정한 MCS)." :
+      `DL은 항상 MCS${A.mcs[A.dl_index]}(점유시간 ${dl}), UL은 e-SNR에 따라 MCS가 바뀝니다. 링크 비용 = DL + UL 점유시간.`;
+    const tail = A.below_lowest === "lowest" ? `${lo} dB 미만 링크도 MCS${A.mcs[0]}(점유시간 ${A.airtime[0]})로 계산합니다(최소 e-SNR 없음).`
+      : `${lo} dB 미만 링크는 쓸 수 없습니다(∞).`;
+    $("tblnote").textContent = head + " " + tail;
+  }
+  function radioInput(id, key, stateKey, ok) {
+    $(id).addEventListener("change", () => {
+      const v = parseFloat($(id).value);
+      if (!isFinite(v) || !ok(v)) { $(id).value = String(P[key]); return; }
+      P[key] = v; state[stateKey] = v; state.dirty = true; computeLive(); render(); scheduleRelay();
+    });
+  }
+  radioInput("sens", "rx_sensitivity_dbm", "sens", (v) => v > -150 && v < 0);
+  radioInput("beta", "eesm_beta", "beta", (v) => v > 0);
+  for (const [id, names] of [["cabBS", ["BS"]], ["cabMS", ["MS1", "MS2"]], ["cabR", ["R"]]]) {
+    $(id).addEventListener("change", () => {
+      const v = parseFloat($(id).value);
+      if (!isFinite(v) || v < 0 || v > 30) { $(id).value = String(E.cableDb(P, names[0])); return; }
+      if (typeof P.cable_loss_db === "number") { const c = P.cable_loss_db; P.cable_loss_db = { BS: c, MS1: c, MS2: c, R: c }; }
+      for (const n of names) P.cable_loss_db[n] = v;
+      state.cab = Object.assign({}, P.cable_loss_db); state.dirty = true; computeLive(); render(); scheduleRelay();
+    });
+  }
+  let fRaf = 0;
+  function setFade(v, final) {
+    P.fade_margin_db = state.fade = v; state.dirty = true;
+    $("fadeout").textContent = v + " dB";
+    if (final) { computeLive(); render(); scheduleRelay(); return; }
+    if (!fRaf) fRaf = requestAnimationFrame(() => { fRaf = 0; computeLive(); render(); });  // links at the current relay point
+  }
+  $("fade").addEventListener("input", (e) => setFade(parseFloat(e.target.value) || 0, false));
+  $("fade").addEventListener("change", () => scheduleRelay());
+  let hRaf = 0;
+  $("hR").addEventListener("input", (e) => {
+    state.hR = Math.min(HMAX, Math.max(HMIN, parseInt(e.target.value, 10) || HMIN));
+    $("hRout").textContent = state.hR + " m";
+    state.dirty = true;
+    if (!hRaf) hRaf = requestAnimationFrame(() => { hRaf = 0; computeLive(); render(); });  // links at the current relay point
+  });
+  $("hR").addEventListener("change", () => scheduleRelay());  // new relay search when the slider is released
+  function renderResult() {
+    const box = $("result"); box.replaceChildren();
+    const row = (k, nodes) => { const d = document.createElement("div"); d.className = "row"; const kk = document.createElement("span"); kk.className = "k"; kk.textContent = k; const v = document.createElement("div"); v.append(...nodes); d.append(kk, v); box.append(d); };
+    const span = (cls, t) => { const s = document.createElement("span"); s.className = cls; s.textContent = t; return s; };
+    if (!state.live) { row("상태", [span("desc", "세 노드를 모두 찍으면 계산합니다")]); return; }
+    const b = state.live.base;
+    row("중계 없음", [span("topo", b.label), document.createTextNode("  "), span("rate", b.rate_bps > 0 ? mbps(b.rate_bps) : "불가"), document.createElement("br"), span("desc", b.description)]);
+    const cur = current();
+    if (cur) {
+      const nb = (b.reachable || []).length, nf = (f => (f.reachable || []).length)(cur.final);
+      const f = cur.final, g = b.rate_bps > 0 && nb === nf ? f.rate_bps / b.rate_bps : Infinity;
+      const kids = [span("topo", f.label), document.createTextNode("  "), span("rate", f.rate_bps > 0 ? mbps(f.rate_bps) : "불가")];
+      if (nf !== nb) kids.push(document.createTextNode("  "), span("gain", `연결 MS ${nb} → ${nf}`));
+      if (f.usesRelay && isFinite(g)) kids.push(document.createTextNode("  "), span("gain", "×" + (g >= 10 ? g.toFixed(0) : g.toFixed(2))));
+      kids.push(document.createElement("br"), span("desc", f.usesRelay || !f.reachable || !f.reachable.length ? f.description : "중계기를 거치지 않는 편이 낫습니다"));
+      row(state.relayMode === "manual" ? "중계 (직접)" : "중계 포함", kids);
+    } else {
+      row("중계 포함", [span("desc", "계산 중…")]);
+    }
+  }
+  function linkState(i) {
+    if (!i) return "";
+    if (!i.los) return `차단 · 회절 ${i.diff_db.toFixed(1)} dB`;
+    if (i.diff_db > 0) return `가시선 · 프레넬 일부 가림 +${i.diff_db.toFixed(1)} dB`;
+    return `가시선 · ${i.n}개 경로`;
+  }
+  function renderTable() {
+    $("costnote").textContent = P.traffic === "mean"
+      ? "링크 비용 = 두 노드 사이 양방향 e-SNR의 평균(dB)으로 정한 MCS의 점유시간입니다. 0 dB 미만이면 링크가 없는 것으로 보고 ∞입니다. 다익스트라는 모든 무선통신기에서 통제국(BS)까지 유효한 경로(구간 비용이 0 초과, ∞ 아님)의 비용 합을 구해 가장 작은 경로를 고릅니다. MS당 전송률 = 90 × 3.187 Mb/s / (두 MS 경로 비용의 합)."
+      : P.traffic === "uplink"
+      ? "링크 비용 = UL 점유시간(점유시간 표, UL MCS 열은 앞 노드가 부모일 때 자식→부모 방향). 다익스트라는 BS에서 각 MS까지 비용 합이 가장 작은 경로를 고르고, MS당 UL 전송률 = 90 × 3.187 Mb/s / (두 MS 경로 비용의 합)입니다."
+      : "링크 비용 = DL 점유시간 + UL 점유시간(점유시간 표, UL MCS 열은 앞 노드가 부모일 때 자식→부모 방향). 다익스트라는 BS에서 각 MS까지 비용 합이 가장 작은 경로를 고르고, MS당 전송률(DL·UL 각각) = 90 × 3.187 Mb/s / (두 MS 경로 비용의 합)입니다.";
+    const t = $("tab"); t.replaceChildren();
+    if (!state.live) return;
+    const { topo, tab, info, names } = shown();
+    const used = new Map((topo ? topo.links : []).map(([p, c]) => [[p, c].sort().join("|"), [p, c]]));
+    const cell = (tag, txt, cls) => { const c = document.createElement(tag); if (cls) c.className = cls; c.textContent = txt; return c; };
+    const head = document.createElement("tr");
+    const tbl = !!P.airtime, mean = P.traffic === "mean";
+    const pw = tbl && mean && P.tx_power_min_dbm != null;
+    head.append(cell("th", "링크 · 경로"), cell("th", "→ dB"), cell("th", "← dB"),
+                ...(tbl ? [cell("th", mean ? "평균 · MCS" : "UL MCS")] : []), ...(pw ? [cell("th", "필요 출력")] : []), cell("th", "비용"));
+    const thead = document.createElement("thead"); thead.append(head); t.append(thead);
+    const tb = document.createElement("tbody");
+    for (const [a0, b0] of PAIRS) {
+      if (!names.includes(a0) || !names.includes(b0)) continue;
+      const u = used.get([a0, b0].sort().join("|"));
+      const [a, b] = u || [a0, b0];  // used links read parent -> child (DL first)
+      const x = tab[a + ">" + b], y = tab[b + ">" + a];
+      const r = document.createElement("tr"); r.className = u ? "used" : "unused";
+      const nm = cell("td", u ? `${a} → ${b} (사용)` : `${a} ↔ ${b}`, "name");
+      nm.append(cell("span", linkState(info[a + ">" + b]), "st"));
+      const w = E.edgeWeight(tab, a, b, P.traffic, E.costOf(P));
+      const xm = mean ? (x + y) / 2 : y;
+      const ulk = tbl ? E.tableLevel(P.airtime, xm) : 0;
+      r.append(nm, cell("td", f1(x), x < 0 ? "bad" : ""), cell("td", f1(y), y < 0 ? "bad" : ""),
+               ...(tbl ? [cell("td", (mean ? f1(xm) + " · " : "") + (ulk >= 0 ? "MCS" + P.airtime.mcs[ulk] : (P.airtime.below_lowest === "lowest" ? "MCS" + P.airtime.mcs[0] + "*" : "불가")), ulk >= 0 ? "" : "bad")] : []),
+               ...(pw ? [cell("td", ulk >= 0 ? f1(Math.max(P.tx_power_min_dbm, state.tx - (xm - P.airtime.snr_db[ulk]))) + " dBm" : "-")] : []),
+               cell("td", isFinite(w) ? w.toFixed(2) : "∞", isFinite(w) ? "" : "bad"));
+      tb.append(r);
+    }
+    t.append(tb);
+    const cap = document.createElement("caption");
+    cap.className = "note"; cap.style.textAlign = "left"; cap.style.captionSide = "bottom"; cap.style.paddingTop = "4px";
+    cap.textContent = "→ 는 앞 노드가 송신(사용 중인 링크는 DL), ← 는 반대 방향(UL)의 e-SNR입니다." +
+      (pw ? ` 필요 출력: 자동 송신출력(AGC)이 같은 MCS를 유지하면서 낮출 수 있는 출력(${state.tx} dBm에서 시작, 하한 ${P.tx_power_min_dbm} dBm).` : "");
+    t.append(cap);
+  }
+  function renderMatrix() {
+    const t = $("cmat"); t.replaceChildren();
+    const r = $("routes"); r.replaceChildren();
+    if (!state.live) return;
+    const { topo, tab, names } = shown();
+    const cost = E.costOf(P), on = new Set((topo ? topo.links : []).map(([a, b]) => [a, b].sort().join("|")));
+    const cell = (tag, txt, cls) => { const c = document.createElement(tag); if (cls) c.className = cls; c.textContent = txt; return c; };
+    const head = document.createElement("tr"); head.append(cell("th", ""), ...names.map((n) => cell("th", n)));
+    const th = document.createElement("thead"); th.append(head); t.append(th);
+    const tb = document.createElement("tbody");
+    for (const a of names) {
+      const row = document.createElement("tr"); row.append(cell("th", a, "lft"));
+      for (const b of names) {
+        if (a === b) { row.append(cell("td", "0", "self")); continue; }
+        const w = E.edgeWeight(tab, a, b, P.traffic, cost);
+        row.append(cell("td", isFinite(w) ? String(+w.toFixed(2)) : "∞", !isFinite(w) ? "inf" : on.has([a, b].sort().join("|")) ? "on" : ""));
+      }
+      tb.append(row);
+    }
+    t.append(tb);
+    const cur = current(), dec = cur ? cur.final : state.live.base;
+    if (!dec || !dec.routes) return;
+    const rh = document.createElement("tr"); rh.append(cell("th", "무선통신기", "lft"), cell("th", "통제국(BS)까지 최단 경로", "lft"), cell("th", "비용 합"));
+    const rth = document.createElement("thead"); rth.append(rh); r.append(rth);
+    const rb = document.createElement("tbody");
+    for (const n of Object.keys(dec.routes)) {
+      if (n === "BS") continue;
+      const v = dec.routes[n];
+      const row = document.createElement("tr");
+      row.append(cell("td", n, "lft"), cell("td", v.path ? v.path.join(" → ") : "유효 경로 없음", "lft" + (v.path ? "" : " inf")),
+                 cell("td", isFinite(v.cost) ? String(+v.cost.toFixed(2)) : "∞", isFinite(v.cost) ? "" : "inf"));
+      rb.append(row);
+    }
+    r.append(rb);
+  }
+  function command() {
+    if (!allPlaced()) return "";
+    const ll = (n) => lonlat(state.pos[n].u, state.pos[n].v);
+    const extra = (state.beta !== null ? ` --eesm-beta ${P.eesm_beta}` : "") + (state.sens !== null ? ` --rx-sensitivity ${P.rx_sensitivity_dbm}` : "") +
+      (state.fade !== null ? ` --fade-margin ${P.fade_margin_db}` : "") +
+      (state.cab !== null ? ` --cable-loss BS=${E.cableDb(P, "BS")},MS1=${E.cableDb(P, "MS1")},MS2=${E.cableDb(P, "MS2")},R=${E.cableDb(P, "R")}` : "");
+    return `python -m autorelay plan ${REGION.config} --tx-power ${state.tx}${extra} \\\n` +
+      NODES.map((n) => `  --node ${n.key}=${f6(ll(n.key).lat)},${f6(ll(n.key).lon)}`).join(" \\\n");
+  }
+  function renderStatus() {
+    $("copy").disabled = !allPlaced();
+    $("save").disabled = !allPlaced() || (!!db && !state.dirty);
+    $("save").textContent = db ? "위치 저장" : "파일로 저장";
+    $("load").hidden = !!db;
+    $("copy").hidden = !(REGION && REGION.config);
+    const st = $("status");
+    const when = state.savedAt ? new Date(state.savedAt).toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
+    if (!db) { st.className = state.savedAt && !state.dirty ? "status ok" : "status"; st.textContent = state.savedAt && !state.dirty ? "파일 저장·불러옴 " + when : ""; }
+    else if (state.dirty) { st.className = "status"; st.textContent = allPlaced() ? "저장 안 됨" : ""; }
+    else if (state.savedAt) { st.className = "status ok"; st.textContent = "저장됨 " + new Date(state.savedAt).toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }); }
+  }
+  function renderOptions() {
+    const t = $("opts"); t.replaceChildren();
+    if (!state.live) return;
+    const td = (txt, cls) => { const c = document.createElement("td"); if (cls) c.className = cls; c.textContent = txt; return c; };
+    const head = document.createElement("tr");
+    head.append(...["토폴로지", "경로 (링크 e-SNR, dB)", "비용", "MS당"].map((x) => { const th = document.createElement("th"); th.textContent = x; return th; }));
+    const thead = document.createElement("thead"); thead.append(head); t.append(thead);
+    const tb = document.createElement("tbody");
+    const section = (title, dec, list, tab) => {
+      const sr = document.createElement("tr"); sr.className = "sub";
+      const th = document.createElement("th"); th.colSpan = 4; th.textContent = title; sr.append(th); tb.append(sr);
+      for (const a of list) {
+        const r = document.createElement("tr"); r.className = "alt"; r.tabIndex = 0;
+        r.setAttribute("aria-selected", String(state.preview === a.description));
+        const c1 = td(a.label);
+        if (a.description === dec.description) { const b = document.createElement("span"); b.className = "pick"; b.textContent = "선택"; c1.append(b); }
+        r.append(c1, td(a.links.map(([pp, cc]) => `${pp}→${cc} ${f1(tab[pp + ">" + cc])}`).join(", "), "path"),
+                 td(isFinite(a.total_cost) ? a.total_cost.toFixed(2) : "∞", "r"), td(a.rate_bps > 0 ? mbps(a.rate_bps) : "불가", "r"));
+        const toggle = () => { state.preview = state.preview === a.description ? null : a.description; renderOptions(); renderTable(); renderMatrix(); drawLinks(); };
+        r.addEventListener("click", toggle);
+        r.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } });
+        tb.append(r);
+      }
+    };
+    const b = state.live.base;
+    section("중계기 없이", b, b.alternatives, state.live.tab);
+    const cur = current();
+    if (cur) section(state.relayMode === "manual" ? "중계기 포함 (직접 지정 위치, 상위 5)" : "중계기 포함 (최적 위치, 상위 5)",
+                     cur.final, cur.final.alternatives.slice(0, 5), cur.final_table);
+    t.append(tb);
+  }
+  function relayNote() {
+    $("relaynote").textContent = `중계 위치는 ${P.grid_m} m 격자 후보(수면 위는 '수면 위 중계' 설정을 따름)에서 ` + (P.robust_radius_m >= P.grid_m
+      ? `① 연결되는 MS 수 ② 반경 ${P.robust_radius_m} m 안의 최악값(연결 MS 수, 다익스트라 비용 합) ③ 그 지점의 비용 합 ④ 동점이면 드론 링크의 최소 e-SNR이 큰 곳 순으로 고릅니다.`
+      : "① 연결되는 MS 수 ② 다익스트라 비용 합(작을수록) ③ 동점이면 드론 링크의 최소 e-SNR이 큰 곳 순으로 고릅니다. 비용이 4단계뿐이라 같은 비용인 곳이 많아 ③이 필요합니다.");
+  }
+  function render() { renderNodes(); renderSegs(); renderPins(); renderResult(); renderTable(); renderMatrix(); renderOptions(); renderStatus(); }
+
+  $("lnkbtn").addEventListener("click", () => { state.showLinks = !state.showLinks; $("lnkbtn").setAttribute("aria-pressed", String(state.showLinks)); drawLinks(); });
+  $("heatbtn").addEventListener("click", () => { state.heat = !state.heat; $("heatbtn").setAttribute("aria-pressed", String(state.heat)); drawHeat(); });
+  $("copy").addEventListener("click", async () => {
+    const text = command(), st = $("status");
+    try { await navigator.clipboard.writeText(text); st.className = "status ok"; st.textContent = "명령을 복사했습니다"; }
+    catch { st.className = "status"; st.textContent = "복사가 막혔습니다. 위치 저장을 눌러 주세요"; }
+  });
+
+  // ---------------- saved positions (db)
+  let db = null;
+  $("save").addEventListener("click", async () => {
+    const st = $("status"); $("save").disabled = true;
+    const nodes = {};
+    for (const n of NODES) { const p = state.pos[n.key], ll = lonlat(p.u, p.v); nodes[n.key] = { lat: ll.lat, lon: ll.lon, u: p.u, v: p.v, ground_m: groundAt(p.u, p.v), pluscode: plusCode(ll.lat, ll.lon) }; }
+    const cur = current(), doc = { nodes, tx_power_dbm: state.tx, relay_height_m: state.hR, eesm_beta: P.eesm_beta, rx_sensitivity_dbm: P.rx_sensitivity_dbm,
+                                 cable_loss_db: P.cable_loss_db, fade_margin_db: P.fade_margin_db || 0, saved_at: new Date().toISOString() };
+    if (state.live) doc.without_relay = { topology: state.live.base.label, description: state.live.base.description, rate_bps: state.live.base.rate_bps };
+    if (cur) {
+      const rp = relayPoint(), ll = lonlat(rp.u, rp.v);
+      doc.relay = { mode: state.relayMode, lat: ll.lat, lon: ll.lon, u: rp.u, v: rp.v, grid_m: state.relayMode === "auto" ? state.relay.step : null,
+                    topology: cur.final.label, description: cur.final.description, rate_bps: cur.final.rate_bps };
+    }
+    if (!db) {  // outside Claude: save the pick as a JSON file
+      doc.region = REGION.id;
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([JSON.stringify(doc, null, 2)], { type: "application/json" }));
+      a.download = `autorelay_${REGION.id}_${doc.saved_at.slice(0, 16).replace(/[:T]/g, "-")}.json`;
+      document.body.append(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      state.dirty = false; state.savedAt = doc.saved_at; renderStatus();
+      st.className = "status ok"; st.textContent = "파일로 저장했습니다";
+      return;
+    }
+    try {
+      await db.doc("picks/" + REGION.id).set(doc);
+      state.dirty = false; state.savedAt = doc.saved_at; renderStatus();
+      st.textContent += " · 채팅에서 계산해 달라고 하시면 됩니다";
+    } catch (e) {
+      st.className = "status err";
+      st.textContent = e && e.code === "invalid_argument" ? "이 화면에서는 저장 권한이 없습니다. 명령 복사를 써 주세요." : "저장하지 못했습니다. 잠시 뒤 다시 눌러 주세요.";
+      $("save").disabled = false;
+    }
+  });
+
+  // ---------------- regions
+  let regions = [], unsub = null, loadSeq = 0;
+  function stopPool() { for (const w of pool) w.terminate(); pool = []; queue = []; collect = null; }
+  function loadScript(src) {
+    return new Promise((ok, bad) => {
+      const el = document.createElement("script");
+      el.src = src; el.dataset.region = "1";
+      el.onload = () => ok(); el.onerror = () => bad(new Error(src));
+      document.querySelectorAll("script[data-region]").forEach((x) => x.remove());
+      document.head.append(el);
+    });
+  }
+  async function loadRegion(id) {
+    const r = regions.find((x) => x.id === id) || regions[0];
+    const seq = ++loadSeq;
+    $("statetext").textContent = `${r.name} 지형 자료를 불러오는 중`;
+    stopPool();
+    window.AUTORELAY_TERRAIN = null;
+    try { await loadScript(`regions/${r.id}/terrain_data.js`); } catch { $("statetext").textContent = "지형 자료를 불러오지 못했습니다. 새로고침해 주세요."; return; }
+    if (seq !== loadSeq) return;
+    REGION = r; TD = window.AUTORELAY_TERRAIN;
+    W = TD.W; H = TD.H; MPP = TD.mpp; GEO = TD.geo; P = TD.params; NPX = 256 * 2 ** GEO.zoom;
+    if (state.onWater === null) state.onWater = !!P.relay_on_water;
+    P.relay_on_water = state.onWater;
+    if (state.tx === null) state.tx = TXS.includes(P.tx_power_dbm.BS) ? P.tx_power_dbm.BS : TXS[0];
+    if (state.beta !== null) P.eesm_beta = state.beta;
+    if (state.sens !== null && P.rx_sensitivity_dbm != null) P.rx_sensitivity_dbm = state.sens;
+    if (state.cab !== null) P.cable_loss_db = Object.assign({}, state.cab);
+    if (state.fade !== null) P.fade_margin_db = state.fade;
+    if (state.robust !== null) P.robust_radius_m = state.robust;
+    if (P.airtime) { if (state.snr) P.airtime.snr_db = state.snr.slice(); if (state.below) P.airtime.below_lowest = state.below; }
+    model = E.makeModel(TD);
+    NODES = [
+      { key: "BS", h: P.heights_m.BS, c: "var(--bs)" },
+      { key: "MS1", h: P.heights_m.MS1, c: "var(--ms1)" },
+      { key: "MS2", h: P.heights_m.MS2, c: "var(--ms2)" },
+    ];
+    Object.assign(state, { sel: "BS", pos: {}, hR: Math.min(HMAX, Math.max(HMIN, P.heights_m.R)), relayMode: "auto", relayManual: null,
+                           dirty: false, savedAt: null, live: null, relay: null, manual: null, preview: null });
+    for (const [k, v] of Object.entries(TD.nodes_px || {})) state.pos[k] = { u: v[0] + 0.5, v: v[1] + 0.5 };
+    for (const k in inlineGrids) delete inlineGrids[k];
+    vp.style.aspectRatio = `${W} / ${H}`;
+    stage.style.width = W + "px"; stage.style.height = H + "px";
+    $("links").setAttribute("viewBox", `0 0 ${W} ${H}`);
+    const img = $("mapimg"); img.src = `regions/${r.id}/map.png`; img.width = W; img.height = H; img.alt = r.name + " 지도";
+    $("h1").textContent = r.name + " 노드 배치";
+    $("attrib").textContent = r.attribution || "";
+    $("pxnote").textContent = `BS ${P.heights_m.BS} m, MS ${P.heights_m.MS1} m 안테나(지면 기준). 지도 1픽셀은 약 ${Math.round(MPP)} m입니다. `;
+    relayNote();
+    $("region").value = r.id;
+    try { localStorage.setItem("autorelay.region", r.id); } catch {}
+    $("heat").hidden = true; $("legend").hidden = true;
+    resetView();
+    startPool();
+    computeLive();
+    render();
+    scheduleRelay();
+    subscribe();
+  }
+  /** Apply a saved pick (db document or exported JSON file) to the page; true if anything changed. */
+  function applyPick(d) {
+    let moved = false;
+    for (const n of NODES) {
+      const p = d.nodes && d.nodes[n.key];
+      if (p && typeof p.u === "number" && typeof p.v === "number" && !onWater(p.u, p.v)) {
+        const o = state.pos[n.key];
+        if (!o || Math.abs(o.u - p.u) > 1e-6 || Math.abs(o.v - p.v) > 1e-6) moved = true;
+        state.pos[n.key] = { u: p.u, v: p.v };
+      }
+    }
+    if (TXS.includes(d.tx_power_dbm) && d.tx_power_dbm !== state.tx) { state.tx = d.tx_power_dbm; moved = true; }
+    if (typeof d.eesm_beta === "number" && d.eesm_beta > 0 && d.eesm_beta !== P.eesm_beta) { P.eesm_beta = state.beta = d.eesm_beta; moved = true; }
+    if (typeof d.rx_sensitivity_dbm === "number" && P.rx_sensitivity_dbm != null && d.rx_sensitivity_dbm !== P.rx_sensitivity_dbm) { P.rx_sensitivity_dbm = state.sens = d.rx_sensitivity_dbm; moved = true; }
+    if (typeof d.fade_margin_db === "number" && d.fade_margin_db >= 0 && d.fade_margin_db <= 15 && d.fade_margin_db !== (P.fade_margin_db || 0)) { P.fade_margin_db = state.fade = d.fade_margin_db; moved = true; }
+    if (d.cable_loss_db && typeof d.cable_loss_db === "object" && ["BS", "MS1", "MS2", "R"].every((n) => typeof d.cable_loss_db[n] === "number")
+        && ["BS", "MS1", "MS2", "R"].some((n) => d.cable_loss_db[n] !== E.cableDb(P, n))) {
+      P.cable_loss_db = { BS: d.cable_loss_db.BS, MS1: d.cable_loss_db.MS1, MS2: d.cable_loss_db.MS2, R: d.cable_loss_db.R }; state.cab = Object.assign({}, P.cable_loss_db); moved = true;
+    }
+    if (typeof d.relay_height_m === "number" && d.relay_height_m >= HMIN && d.relay_height_m <= HMAX && d.relay_height_m !== state.hR) { state.hR = d.relay_height_m; moved = true; }
+    if (d.relay && d.relay.mode === "manual" && typeof d.relay.u === "number") { state.relayMode = "manual"; state.relayManual = { u: d.relay.u, v: d.relay.v }; moved = true; }
+    return moved;
+  }
+  function subscribe() {
+    if (unsub) { unsub(); unsub = null; }
+    if (!db || !REGION) return;
+    const id = REGION.id;
+    unsub = db.doc("picks/" + id).onSnapshot((snap) => {
+      if (!REGION || REGION.id !== id) return;
+      if (!snap.exists || state.dirty) { renderStatus(); return; }
+      const d = snap.data();
+      const moved = applyPick(d);
+      state.savedAt = d.saved_at || null;
+      if (moved) { computeLive(); scheduleRelay(); }
+      render();
+    }, () => renderStatus());
+  }
+  $("load").addEventListener("click", () => $("loadfile").click());
+  $("loadfile").addEventListener("change", async (e) => {
+    const f = e.target.files && e.target.files[0], st = $("status");
+    e.target.value = "";
+    if (!f) return;
+    try {
+      const d = JSON.parse(await f.text());
+      if (d.region && d.region !== REGION.id) {
+        if (!regions.some((r) => r.id === d.region)) throw new Error("region");
+        await loadRegion(d.region);
+      }
+      applyPick(d);
+      state.dirty = false; state.savedAt = d.saved_at || null;
+      computeLive(); render(); scheduleRelay();
+      st.className = "status ok"; st.textContent = "불러왔습니다";
+    } catch { st.className = "status err"; st.textContent = "이 파일은 불러올 수 없습니다"; }
+  });
+  $("region").addEventListener("change", (e) => loadRegion(e.target.value));
+  $("rqbtn").addEventListener("click", async () => {
+    const q = $("rq").value.trim(), note = $("rqnote");
+    if (!q) { note.textContent = "검색할 지역 이름을 적어 주세요. 예: 단양 도담삼봉, 서산 해미읍성"; return; }
+    if (!db) { note.textContent = `요청을 저장할 수 없는 화면입니다. 채팅에 "${q} 지역 추가해줘"라고 적어 주세요.`; return; }
+    try {
+      await db.doc("requests/r" + Date.now()).set({ query: q, size_km: 10, created_at: new Date().toISOString(), status: "pending" });
+      note.textContent = `"${q}" 요청을 남겼습니다. 채팅에서 "지역 추가해줘"라고 하시면 지도를 만들어 목록에 넣습니다(1~2분).`;
+      $("rq").value = "";
+    } catch { note.textContent = `요청을 저장하지 못했습니다. 채팅에 "${q} 지역 추가해줘"라고 적어 주세요.`; }
+  });
+
+  // ---------------- start
+  (async () => {
+    try { regions = await (await fetch("regions.json")).json(); } catch { regions = []; }
+    if (!regions.length) { $("statetext").textContent = "지역 목록을 불러오지 못했습니다. 새로고침해 주세요."; return; }
+    const sel = $("region");
+    sel.replaceChildren(...regions.map((r) => { const o = document.createElement("option"); o.value = r.id; o.textContent = r.name; return o; }));
+    let first = regions[0].id;
+    try { const k = localStorage.getItem("autorelay.region"); if (k && regions.some((r) => r.id === k)) first = k; } catch {}
+    await loadRegion(first);
+    try { db = window.claude && window.claude.use ? await window.claude.use("db") : null; } catch { db = null; }
+    $("rq").closest(".line").hidden = $("rqnote").hidden = !db;  // region requests go through Claude
+    renderStatus();
+    subscribe();
+  })();
+})();
+</script>
+
+</html>
