@@ -197,16 +197,25 @@ input.num.sm { width: 3.8em; }
 table.airtime input { width: 4.2em; font: inherit; color: var(--ink); background: var(--sheet); border: 1px solid var(--line); border-radius: 4px; padding: 2px 4px; text-align: right; }
 
 /* tables */
-.tablewrap { overflow-x: auto; min-width: 0; }
+.tablewrap { overflow-x: auto; min-width: 0; container-type: inline-size; }  /* tables size to their own box, not the window */
 table { border-collapse: collapse; font: 12.5px/1.3 var(--font-mono); font-variant-numeric: tabular-nums; width: 100%; }
-th, td { padding: 5px 6px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
-th { color: var(--muted); font-weight: 500; }
+th, td { padding: 5px 6px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; vertical-align: top; }
+th { color: var(--muted); font-weight: 500; vertical-align: bottom; }
+th .sub, td .sub { display: block; font-size: .72rem; font-weight: 400; color: var(--muted); line-height: 1.3; }
+th .sub { font-family: var(--font-body); }  /* unit lines in the text face: narrower than mono */
+td.bad .sub { color: inherit; }
+.tablewrap th:first-child, .tablewrap td:first-child { position: sticky; left: 0; background: var(--sheet); z-index: 1; }
+table.opts tr.alt:hover td:first-child, table.opts tr.alt[aria-selected="true"] td:first-child { background: var(--soft); }
+table.opts td:first-child { white-space: normal; min-width: 0; }
+table.opts td:first-child .path { font-family: var(--font-mono); }
+table.opts th .sub { white-space: normal; }
+table.opts td.r { white-space: nowrap; width: 1%; }
 th:first-child, td:first-child { text-align: left; }
 td.bad { color: var(--warn-ink); }
 td.na { color: var(--muted); }
 table.links td.name { font-weight: 600; }
 table.links tr.used td.name { color: var(--accent); }
-table.links .st { display: block; font-family: var(--font-body); font-size: .72rem; font-weight: 400; color: var(--muted); white-space: normal; min-width: 9em; }
+table.links .st { display: block; font-family: var(--font-body); font-size: .72rem; font-weight: 400; color: var(--muted); line-height: 1.3; white-space: normal; word-break: keep-all; }
 table.links tr.unused td { color: var(--muted); }
 table.links tr.unused td.bad { color: var(--warn-ink); }
 table.opts td, table.opts th { text-align: left; }
@@ -215,13 +224,12 @@ table.cmat td.self { color: var(--muted); }
 table.cmat td.inf { color: var(--warn-ink); }
 table.cmat td.on { color: var(--accent); font-weight: 600; }
 table.cmat td.lft, table.cmat th.lft { text-align: left; }
-table.opts td.r { text-align: right; }
+table.opts td.r, table.opts th.r { text-align: right; }
 table.opts tr.alt { cursor: pointer; }
 table.opts tr.alt:hover td { background: var(--soft); }
 table.opts tr.alt[aria-selected="true"] td { background: var(--soft); box-shadow: inset 0 -2px 0 var(--accent); }
 table.opts tr.sub th { padding-top: 10px; color: var(--ink); font-family: var(--font-body); font-weight: 600; font-size: .8rem; }
-table.opts .pick { font: 600 .7rem var(--font-body); color: var(--accent-ink); background: var(--accent); border-radius: 3px; padding: 1px 5px; margin-left: 4px; }
-table.opts .path { white-space: normal; word-break: break-word; }
+table.opts .pick { display: inline-block; font: 600 .7rem/1.1 var(--font-body); color: var(--accent-ink); background: var(--accent); border-radius: 3px; padding: 0 5px; margin-left: 4px; vertical-align: 1px; }
 
 /* actions, notes, help */
 .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
@@ -252,7 +260,20 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 .check { display: inline-flex; align-items: center; gap: 6px; font-size: .82rem; color: var(--muted); }
 .field .check input { flex: none; margin: 0; }
 
+table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' and '필요 출력' apart */
+@container (min-width: 481px) { table.links th + th { padding-left: 10px; } }
+/* narrow table box (phone, or the 400 px side panel): smaller type, the AGC column only when it fits */
+@container (max-width: 480px) {
+  table { font-size: 11.5px; }
+  th, td { padding: 4px 4px; }
+  th .sub, td .sub, table.links .st { font-size: .68rem; }
+}
+@container (max-width: 399px) { table.links .opt { display: none; } }
 @media (max-width: 480px) {
+  table { font-size: 11.5px; }
+  th, td { padding: 4px 4px; }
+  table.links .opt { display: none; }  /* the AGC column needs the wide screen */
+  th .sub, td .sub, table.links .st { font-size: .68rem; }
   .form { grid-template-columns: minmax(0, 1fr); gap: 4px; }
   .form > .lab { padding-top: 8px; }
   .nodes { grid-template-columns: minmax(0, 1fr); }
@@ -351,7 +372,6 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
           <div class="tbl" id="tblbox" hidden>
             <h2>채널 점유시간 표 (MCS 경계)</h2>
             <div class="tablewrap"><table class="airtime" id="airtab" aria-label="채널 점유시간 표"></table></div>
-            <p class="note" id="tblnote"></p>
           </div>
           <details class="help" id="help-cond">
             <summary>계산 기준</summary>
@@ -363,16 +383,14 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 
         <div class="tabpanel" role="tabpanel" id="tp-links" aria-labelledby="tab-links" hidden>
           <div class="tablewrap"><table class="links" id="tab" aria-label="링크별 e-SNR"></table></div>
-          <p class="note" id="tabnote"></p>
         </div>
 
         <div class="tabpanel" role="tabpanel" id="tp-cost" aria-labelledby="tab-cost" hidden>
           <div class="tablewrap"><table class="cmat" id="cmat" aria-label="채널 점유시간 표"></table></div>
-          <p class="note" id="costnote"></p>
         </div>
 
         <div class="tabpanel" role="tabpanel" id="tp-opts" aria-labelledby="tab-opts" hidden>
-          <p class="note">다익스트라가 비교한 후보입니다. MS가 다른 MS를 중계하는 경우(BS→MS1→MS2, BS→MS2→MS1)도 들어 있습니다. 줄을 누르면 지도에 그 경로를 그립니다.</p>
+          <p class="note">줄을 누르면 지도에 그 경로를 그립니다.</p>
           <div class="tablewrap"><table class="opts" id="opts"></table></div>
         </div>
       </section>
@@ -1125,7 +1143,6 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
     const head = P.traffic === "mean" ? "링크 비용 = 양방향 e-SNR 평균으로 정한 MCS의 점유시간(자기 자신 0, 링크 없음 ∞)." : ul ? "토폴로지는 UL만 고려합니다: 링크 비용 = UL 점유시간(UL e-SNR로 정한 MCS)." :
       `DL은 항상 MCS${A.mcs[A.dl_index]}(점유시간 ${dl}), UL은 e-SNR에 따라 MCS가 바뀝니다. 링크 비용 = DL + UL 점유시간.`;
     const tail = `${lo} dB 미만 링크는 쓸 수 없습니다(∞).`;
-    $("tblnote").textContent = head + " " + tail;
   }
   function radioInput(id, key, stateKey, ok) {
     $(id).addEventListener("change", () => {
@@ -1285,16 +1302,12 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
   }
   function linkState(i) {
     if (!i) return "";
-    if (!i.los) return `차단 · 회절 ${i.diff_db.toFixed(1)} dB`;
-    if (i.diff_db > 0) return `가시선 · 프레넬 일부 가림 +${i.diff_db.toFixed(1)} dB`;
-    return `가시선 · ${i.n}개 경로`;
+    if (!i.los) return `차단 ·\u00a0회절 ${i.diff_db.toFixed(1)}\u00a0dB`;
+    if (i.diff_db > 0) return `가시선 ·\u00a0프레넬 일부 가림 +${i.diff_db.toFixed(1)}\u00a0dB`;
+    return `가시선 ·\u00a0${i.n}개\u00a0경로`;
   }
+  const fcost = (w) => (isFinite(w) ? String(+w.toFixed(2)) : "∞");  // 90, 22.5, 28.6
   function renderTable() {
-    $("costnote").textContent = P.traffic === "mean"
-      ? "링크 비용 = 두 노드 사이 양방향 e-SNR의 평균(dB)으로 정한 MCS의 점유시간입니다. 0 dB 미만이면 링크가 없는 것으로 보고 ∞입니다. 다익스트라는 모든 무선통신기에서 통제국(BS)까지 유효한 경로(구간 비용이 0 초과, ∞ 아님)의 비용 합을 구해 가장 작은 경로를 고릅니다. 토폴로지와 드론 위치는 두 MS 경로 비용의 합이 작은 것(채널을 덜 차지하는 것)을 고릅니다. 결과의 MS별 전송속도는 경로 구간의 MCS 전송속도이고, 여러 구간이면 1 / (1/r₁ + 1/r₂ + …)입니다."
-      : P.traffic === "uplink"
-      ? "링크 비용 = UL 점유시간(점유시간 표, UL MCS 열은 앞 노드가 부모일 때 자식→부모 방향). 다익스트라는 BS에서 각 MS까지 비용 합이 가장 작은 경로를 고릅니다."
-      : "링크 비용 = DL 점유시간 + UL 점유시간(점유시간 표, UL MCS 열은 앞 노드가 부모일 때 자식→부모 방향). 다익스트라는 BS에서 각 MS까지 비용 합이 가장 작은 경로를 고릅니다.";
     const t = $("tab"); t.replaceChildren();
     if (!state.live) return;
     const { topo, tab, info, names } = shown();
@@ -1303,8 +1316,9 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
     const head = document.createElement("tr");
     const tbl = !!P.airtime, mean = P.traffic === "mean";
     const pw = tbl && mean && P.tx_power_min_dbm != null;
-    head.append(cell("th", "링크 · 경로"), cell("th", "DL dB"), cell("th", tbl ? "UL dB · UL MCS" : "UL dB"),
-                ...(tbl && mean ? [cell("th", "평균(AH) · 비용 MCS")] : []), ...(pw ? [cell("th", "필요 출력")] : []), cell("th", "비용"));
+    const th2 = (a, b, cls) => { const c = cell("th", a, cls); if (b) c.append(cell("small", b, "sub")); return c; };
+    head.append(th2("링크", "경로"), th2("DL", "dB"), th2("UL", tbl ? "dB · MCS" : "dB"),
+                ...(tbl && mean ? [th2("AH", "dB · MCS · 비용")] : [th2("비용", "")]), ...(pw ? [th2("필요 출력", "dBm", "opt")] : []));
     const thead = document.createElement("thead"); thead.append(head); t.append(thead);
     const tb = document.createElement("tbody");
     for (const [a0, b0] of PAIRS) {
@@ -1313,22 +1327,20 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
       const [a, b] = dlOrder(topo, a0, b0);  // a -> b is DL, b -> a is UL
       const x = tab[a + ">" + b], y = tab[b + ">" + a];
       const r = document.createElement("tr"); r.className = u ? "used" : "unused";
-      const nm = cell("td", u ? `${a} → ${b} (사용)` : `${a} ↔ ${b}`, "name");
-      nm.append(cell("span", linkState(info[a + ">" + b]), "st"));
+      const nm = cell("td", u ? `${a} → ${b}` : `${a} ↔ ${b}`, "name");
+      nm.append(cell("span", (u ? "사용 ·\u00a0" : "") + linkState(info[a + ">" + b]), "st"));
       const w = E.edgeWeight(tab, a, b, P.traffic, E.costOf(P));
       const xm = mean ? (x + y) / 2 : y;
       const ulk = tbl ? E.tableLevel(P.airtime, xm) : 0;  // cost level (AH e-SNR)
       const uk = tbl ? E.tableLevel(P.airtime, y) : -1;  // UL MCS from the UL e-SNR
-      r.append(nm, cell("td", f1(x), x < 0 ? "bad" : ""),
-               cell("td", f1(y) + (tbl ? " · " + (uk >= 0 ? "MCS" + P.airtime.mcs[uk] : "불가") : ""), y < 0 ? "bad" : ""),
-               ...(tbl && mean ? [cell("td", f1(xm) + " · " + (ulk >= 0 ? "MCS" + P.airtime.mcs[ulk] : "불가"), ulk >= 0 ? "" : "bad")] : []),
-               ...(pw ? [cell("td", ulk >= 0 ? f1(Math.max(P.tx_power_min_dbm, state.tx - (xm - P.airtime.snr_db[ulk]))) + " dBm" : "-")] : []),
-               cell("td", isFinite(w) ? w.toFixed(2) : "∞", isFinite(w) ? "" : "bad"));
+      const td2 = (a, b, cls) => { const c = cell("td", a, cls); c.append(cell("small", b, "sub")); return c; };
+      r.append(nm, td2(f1(x), "", x < 0 ? "bad" : ""),
+               td2(f1(y), tbl ? (uk >= 0 ? "MCS" + P.airtime.mcs[uk] : "불가") : "", y < 0 ? "bad" : ""),
+               ...(tbl && mean ? [td2(f1(xm), (ulk >= 0 ? "MCS" + P.airtime.mcs[ulk] + " · " : "") + fcost(w), ulk >= 0 ? "" : "bad")] : [td2(fcost(w), "", isFinite(w) ? "" : "bad")]),
+               ...(pw ? [td2(ulk >= 0 ? f1(Math.max(P.tx_power_min_dbm, state.tx - (xm - P.airtime.snr_db[ulk]))) : "-", "", "opt")] : []));
       tb.append(r);
     }
     t.append(tb);
-    $("tabnote").textContent = "DL은 BS 쪽 노드가 보내는 방향(사용 중인 링크는 화살표 방향), UL은 그 반대 방향의 e-SNR입니다. 쓰지 않는 링크는 BS까지 홉 수가 적은 노드가 보내는 쪽을 DL로 봅니다. UL MCS는 UL e-SNR로, 비용은 무전기가 AH 구간(MCS1)에서 재는 e-SNR에 해당하는 평균값으로 정합니다. DL은 항상 MCS1입니다." +
-      (pw ? ` 필요 출력: 자동 송신출력(AGC)이 같은 MCS를 유지하면서 낮출 수 있는 출력(${state.tx} dBm에서 시작, 하한 ${P.tx_power_min_dbm} dBm).` : "");
   }
   function renderMatrix() {
     const t = $("cmat"); t.replaceChildren();
@@ -1376,19 +1388,23 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
     if (!state.live) return;
     const td = (txt, cls) => { const c = document.createElement("td"); if (cls) c.className = cls; c.textContent = txt; return c; };
     const head = document.createElement("tr");
-    head.append(...["토폴로지", "경로 (링크 e-SNR, dB)", "비용", "UL Mb/s (MS1 / MS2)"].map((x) => { const th = document.createElement("th"); th.textContent = x; return th; }));
+    const th2 = (a, b, cls) => { const th = document.createElement("th"); th.textContent = a; if (cls) th.className = cls; const s = document.createElement("small"); s.className = "sub"; s.textContent = b; th.append(s); return th; };
+    head.append(th2("토폴로지", "경로 (e-SNR dB)"), th2("비용", "UL\u00a0Mb/s MS1\u00a0/\u00a0MS2", "r"));
     const thead = document.createElement("thead"); thead.append(head); t.append(thead);
     const tb = document.createElement("tbody");
     const section = (title, dec, list, tab) => {
       const sr = document.createElement("tr"); sr.className = "sub";
-      const th = document.createElement("th"); th.colSpan = 4; th.textContent = title; sr.append(th); tb.append(sr);
+      const th = document.createElement("th"); th.colSpan = 2; th.textContent = title; sr.append(th); tb.append(sr);
       for (const a of list) {
         const r = document.createElement("tr"); r.className = "alt"; r.tabIndex = 0;
         r.setAttribute("aria-selected", String(state.preview === a.description));
         const c1 = td(a.label);
         if (a.description === dec.description) { const b = document.createElement("span"); b.className = "pick"; b.textContent = "선택"; c1.append(b); }
-        r.append(c1, td(a.links.map(([pp, cc]) => `${pp}→${cc} ${f1(tab[pp + ">" + cc])}`).join(", "), "path"),
-                 td(isFinite(a.total_cost) ? a.total_cost.toFixed(2) : "∞", "r"), td((({ MS1, MS2 }) => [MS1, MS2].map((x) => (x ? (x.ul > 0 ? x.ul.toFixed(2) : "불가") : "-")).join(" / "))(msRates(a.links, tab)), "r"));
+        const path = document.createElement("small"); path.className = "sub path";
+        path.textContent = a.links.map(([pp, cc]) => `${pp}→${cc}\u00a0${f1(tab[pp + ">" + cc])}`).join(", "); c1.append(path);
+        const c2 = td(fcost(a.total_cost), "r"), rates = document.createElement("small"); rates.className = "sub";
+        rates.textContent = (({ MS1, MS2 }) => [MS1, MS2].map((x) => (x ? (x.ul > 0 ? x.ul.toFixed(2) : "불가") : "-")).join(" / "))(msRates(a.links, tab));
+        c2.append(rates); r.append(c1, c2);
         const toggle = () => { state.preview = state.preview === a.description ? null : a.description; renderOptions(); renderTable(); renderMatrix(); drawLinks(); };
         r.addEventListener("click", toggle);
         r.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } });
