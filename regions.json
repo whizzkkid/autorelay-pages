@@ -16,5 +16,14 @@
       128.70577812194824,
       35.27218138873965
     ]
+  },
+  {
+    "id": "darakdae",
+    "name": "다락대",
+    "attribution": "지도 © OpenStreetMap 기여자 (ODbL) · 고도 Copernicus GLO-30",
+    "center_lonlat": [
+      127.1299695968628,
+      38.06799394840945
+    ]
   }
 ]
