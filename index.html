@@ -90,6 +90,10 @@ select, .field input[type="search"] {
 .tiles img { position: absolute; display: block; max-width: none; inset: auto; user-select: none; }
 .basemaps button { height: 32px; font-family: var(--font-body); }
 #heat { opacity: .62; image-rendering: pixelated; }
+#shade { inset: 0; width: 100%; height: 100%; image-rendering: auto; pointer-events: none; }
+#contours { pointer-events: none; }
+#contours path { fill: none; stroke: #6b4a1e; stroke-opacity: .55; stroke-width: calc(0.7px * var(--inv, 1)); stroke-linejoin: round; }
+#contours path.major { stroke-opacity: .8; stroke-width: calc(1.3px * var(--inv, 1)); }
 .pin { position: absolute; width: 0; height: 0; z-index: 3; cursor: grab; }
 .pin i {
   position: absolute; left: -10px; top: -10px; width: 20px; height: 20px; border-radius: 50%;
@@ -275,6 +279,7 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
         <button class="iconbtn" id="zfit" type="button">전체</button>
         <div class="seg basemaps" id="bmseg" role="group" aria-label="배경 지도" hidden></div>
         <span class="sp"></span>
+        <button class="iconbtn" id="terbtn" type="button" aria-pressed="true">지형</button>
         <button class="iconbtn" id="lnkbtn" type="button" aria-pressed="true">링크 e-SNR</button>
         <button class="iconbtn" id="heatbtn" type="button" aria-pressed="true">드론 효과</button>
       </div>
@@ -282,6 +287,8 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
         <div class="stage" id="stage">
           <img id="mapimg" alt="" draggable="false">
           <div id="tiles" class="tiles" hidden></div>
+          <canvas id="shade" width="1" height="1"></canvas>
+          <svg id="contours" viewBox="0 0 1000 1000" aria-hidden="true"></svg>
           <canvas id="heat" width="1" height="1"></canvas>
           <svg id="links" viewBox="0 0 1000 1000" aria-hidden="true"></svg>
         </div>
@@ -403,6 +410,7 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
     manual: null,     // {final_table, final} for a hand-placed relay
     preview: null,    // description of a compared tree drawn on the map
     showLinks: true,  // every link with its e-SNR on the map
+    terrain: true,    // hillshade + contours from the region's own surface heights
     onWater: null,    // relay (drone) candidates over water (null: the region config's)
     snr: null,        // edited UL MCS thresholds [dB] of the airtime table (null: config)
     beta: null,       // EESM beta (null: config)
@@ -449,6 +457,7 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
     const inv = 1 / view.s;
     stage.querySelectorAll(".pin").forEach((p) => { p.style.transform = `scale(${inv})`; });
     $("links").style.setProperty("--inv", inv);
+    $("contours").style.setProperty("--inv", inv);
     drawLinks();
     scheduleTiles();
   }
@@ -470,7 +479,9 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
     const key = SITE.vworld_key || "";
     BASEMAPS = [{ id: "map", label: "지도" }];
     if (Array.isArray(SITE.basemaps)) BASEMAPS.push(...SITE.basemaps);
-    else if (key) BASEMAPS.push(
+    else BASEMAPS.push({ id: "topo", label: "지형도", layers: ["https://a.tile.opentopomap.org/{z}/{x}/{y}.png"], minZoom: 6, maxZoom: 17,
+                         attrib: "지형도 © OpenTopoMap (CC-BY-SA) · 자료 © OpenStreetMap 기여자, SRTM" });
+    if (!Array.isArray(SITE.basemaps) && key) BASEMAPS.push(
       { id: "sat", label: "항공사진", layers: [VWORLD + "/Satellite/{z}/{y}/{x}.jpeg"], minZoom: 6, maxZoom: 19, attrib: "항공사진 © 국토교통부 브이월드" },
       { id: "hyb", label: "항공+지명", layers: [VWORLD + "/Satellite/{z}/{y}/{x}.jpeg", VWORLD + "/Hybrid/{z}/{y}/{x}.png"], minZoom: 6, maxZoom: 19,
         attrib: "항공사진·지명 © 국토교통부 브이월드" });
@@ -496,7 +507,7 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
   }
   function renderAttrib() {
     const b = BASEMAPS.find((x) => x.id === basemap);
-    $("attrib").textContent = [b && b.attrib, REGION && REGION.attribution].filter(Boolean).join(" · ");
+    $("attrib").textContent = [b && b.attrib, REGION && REGION.attribution, state.terrain && terrainNote].filter(Boolean).join(" · ");
   }
   function scheduleTiles() { clearTimeout(tileTimer); tileTimer = setTimeout(updateTiles, 120); }
   function updateTiles() {
@@ -537,7 +548,9 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
       img.onerror = () => {
         img.remove();
         if (++tileErr >= 4 && tileOk === 0 && basemap !== "map") {  // nothing loads: key or registered site address
-          $("readout").textContent = "항공사진을 불러오지 못했습니다. 브이월드 인증키와 등록한 사이트 주소를 확인해 주세요.";
+          $("readout").textContent = (bm.id === "sat" || bm.id === "hyb")
+            ? "항공사진을 불러오지 못했습니다. 브이월드 인증키와 등록한 사이트 주소를 확인해 주세요."
+            : `${bm.label} 배경을 불러오지 못했습니다. 인터넷 연결을 확인해 주세요.`;
           setBasemap("map");
         }
       };
@@ -768,6 +781,83 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
   }
 
   // ---------------- drawing
+  // ---------------- terrain overlay: hillshade and contour lines from the surface heights the model computes with
+  // (Copernicus 30 m DSM, trees and buildings included). Drawn once per region; the toggle only shows / hides it.
+  let terrainNote = "";
+  function showTerrain() {
+    $("shade").hidden = !state.terrain; $("contours").hidden = !state.terrain;
+    $("terbtn").setAttribute("aria-pressed", String(state.terrain));
+  }
+  function drawTerrain() {
+    const T = model.T, mpp = MPP, cv = $("shade");
+    // hillshade: light from the north-west, 45 deg up, vertical exaggeration 1.5; flat ground stays transparent
+    cv.width = W; cv.height = H;
+    const cx = cv.getContext("2d"), img = cx.createImageData(W, H), d = img.data;
+    const az = (360 - 315 + 90) * Math.PI / 180, ze = 45 * Math.PI / 180, cz = Math.cos(ze), sz = Math.sin(ze), zf = 1.5 / (2 * mpp);
+    const flat = 255 * cz;
+    for (let r = 0; r < H; r++) {
+      const r0 = Math.max(r - 1, 0) * W, r1 = Math.min(r + 1, H - 1) * W, rr = r * W;
+      for (let c = 0; c < W; c++) {
+        const c0 = Math.max(c - 1, 0), c1 = Math.min(c + 1, W - 1);
+        const dx = (T[rr + c1] - T[rr + c0]) * zf, dy = (T[r1 + c] - T[r0 + c]) * zf;
+        const slope = Math.atan(Math.sqrt(dx * dx + dy * dy)), aspect = Math.atan2(dy, -dx);
+        const v = 255 * (cz * Math.cos(slope) + sz * Math.sin(slope) * Math.cos(az - aspect));
+        const o = (rr + c) * 4;
+        if (v < flat) { d[o] = d[o + 1] = d[o + 2] = 0; d[o + 3] = Math.min(255, Math.round((flat - v) / flat * 150)); }
+        else { d[o] = d[o + 1] = d[o + 2] = 255; d[o + 3] = Math.min(255, Math.round((v - flat) / (255 - flat) * 90)); }
+      }
+    }
+    cx.putImageData(img, 0, 0);
+    // contours: marching squares on a ~15 m grid of the smoothed surface, 20 m apart, every 100 m heavier
+    const k = Math.max(1, Math.round(15 / mpp)), nx = Math.floor((W - 1) / k) + 1, ny = Math.floor((H - 1) / k) + 1;
+    let z = new Float32Array(nx * ny);
+    for (let i = 0; i < ny; i++) for (let j = 0; j < nx; j++) z[i * nx + j] = T[(i * k) * W + j * k];
+    for (let pass = 0; pass < 2; pass++) {  // 3 x 3 mean, twice: the DSM is 30 m data with trees
+      const s = new Float32Array(nx * ny);
+      for (let i = 0; i < ny; i++) for (let j = 0; j < nx; j++) {
+        let a = 0, n = 0;
+        for (let di = -1; di <= 1; di++) for (let dj = -1; dj <= 1; dj++) {
+          const ii = i + di, jj = j + dj; if (ii < 0 || jj < 0 || ii >= ny || jj >= nx) continue; a += z[ii * nx + jj]; n++;
+        }
+        s[i * nx + j] = a / n;
+      }
+      z = s;
+    }
+    let lo = Infinity, hi = -Infinity;
+    for (let q = 0; q < z.length; q++) { if (z[q] < lo) lo = z[q]; if (z[q] > hi) hi = z[q]; }
+    const step = hi - lo > 1200 ? 50 : 20, major = step * 5;
+    const svg = $("contours"); svg.replaceChildren(); svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    const ns = "http://www.w3.org/2000/svg";
+    const px = (j, i) => `${(j * k + 0.5).toFixed(1)},${(i * k + 0.5).toFixed(1)}`;
+    for (let lv = Math.floor(lo / step + 1) * step; lv < hi; lv += step) {
+      const parts = [];
+      for (let i = 0; i < ny - 1; i++) for (let j = 0; j < nx - 1; j++) {
+        const a = z[i * nx + j], b = z[i * nx + j + 1], c = z[(i + 1) * nx + j + 1], dd = z[(i + 1) * nx + j];
+        const code = (a >= lv ? 8 : 0) | (b >= lv ? 4 : 0) | (c >= lv ? 2 : 0) | (dd >= lv ? 1 : 0);
+        if (code === 0 || code === 15) continue;
+        const t = (p, q) => (lv - p) / (q - p);
+        const top = [j + t(a, b), i], right = [j + 1, i + t(b, c)], bottom = [j + t(dd, c), i + 1], left = [j, i + t(a, dd)];
+        const seg = (p, q) => parts.push(`M${px(p[0], p[1])}L${px(q[0], q[1])}`);
+        switch (code) {
+          case 1: case 14: seg(left, bottom); break;
+          case 2: case 13: seg(bottom, right); break;
+          case 3: case 12: seg(left, right); break;
+          case 4: case 11: seg(top, right); break;
+          case 6: case 9: seg(top, bottom); break;
+          case 7: case 8: seg(left, top); break;
+          case 5: if ((a + b + c + dd) / 4 >= lv) { seg(left, top); seg(bottom, right); } else { seg(left, bottom); seg(top, right); } break;
+          case 10: if ((a + b + c + dd) / 4 >= lv) { seg(top, right); seg(left, bottom); } else { seg(left, top); seg(bottom, right); } break;
+        }
+      }
+      if (!parts.length) continue;
+      const path = document.createElementNS(ns, "path");
+      path.setAttribute("d", parts.join("")); if (lv % major === 0) path.setAttribute("class", "major");
+      svg.append(path);
+    }
+    terrainNote = `지형: 계산에 쓰는 표면 높이(Copernicus 30 m, 수목 포함)의 음영과 ${step} m 등고선(${major} m 굵게)`;
+    try { if (localStorage.getItem("autorelay.terrain") === "0") state.terrain = false; } catch {}
+    showTerrain(); renderAttrib();
+  }
   function drawHeat() {
     // one canvas pixel per grid cell, stretched over the cells' footprint on the picture
     const cv = $("heat"), r = state.relay;
@@ -1287,6 +1377,11 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
   }
   function render() { renderNodes(); renderSegs(); renderPins(); renderResult(); renderTable(); renderMatrix(); renderOptions(); renderStatus(); }
 
+  $("terbtn").addEventListener("click", () => {
+    state.terrain = !state.terrain; $("terbtn").setAttribute("aria-pressed", String(state.terrain));
+    try { localStorage.setItem("autorelay.terrain", state.terrain ? "1" : "0"); } catch {}
+    showTerrain(); renderAttrib();
+  });
   $("lnkbtn").addEventListener("click", () => { state.showLinks = !state.showLinks; $("lnkbtn").setAttribute("aria-pressed", String(state.showLinks)); drawLinks(); });
   $("heatbtn").addEventListener("click", () => { state.heat = !state.heat; $("heatbtn").setAttribute("aria-pressed", String(state.heat)); drawHeat(); });
   $("copy").addEventListener("click", async () => {
@@ -1362,6 +1457,7 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
     if (state.fade !== null) P.fade_margin_db = state.fade;
     if (P.airtime) { if (state.snr) P.airtime.snr_db = state.snr.slice(); }
     model = E.makeModel(TD);
+    drawTerrain();
     NODES = [
       { key: "BS", h: P.heights_m.BS, c: "var(--bs)" },
       { key: "MS1", h: P.heights_m.MS1, c: "var(--ms1)" },
