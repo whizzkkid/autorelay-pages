@@ -5,7 +5,7 @@
  *   autorelay/terrain.py    TerrainModel.channel (antenna elevation pattern, H(f) over the band)
  *   autorelay/phy.py        snr_db, eesm_db
  *   autorelay/topology.py   AirtimeTable, edge_weight, dijkstra, decide_dijkstra, relay_grid_dijkstra
- *   autorelay/terrain_planner.py  candidate_grid, _robust, candidate ordering
+ *   autorelay/terrain_planner.py  candidate_grid, candidate ordering
  * scripts/validate_web_engine.py runs this file under Node and compares it with the Python code.
  */
 (function (root) {
@@ -648,39 +648,17 @@
              ny: ys.length, nx: xs.length, step };
   }
 
-  function robust(grid, values, radiusM) {
-    const r = radiusM / grid.step;
-    if (r < 1) return Float64Array.from(values);
-    const k = Math.ceil(r), { nx, ny } = grid;
-    const img = new Float64Array(nx * ny).fill(Infinity);
-    for (let q = 0; q < values.length; q++) img[grid.i[q] * nx + grid.j[q]] = values[q];
-    const offs = [];
-    for (let a = -k; a <= k; a++) for (let b = -k; b <= k; b++) if (a * a + b * b <= r * r + 1e-9) offs.push([a, b]);
-    const out = new Float64Array(values.length);
-    for (let q = 0; q < values.length; q++) {
-      let mn = Infinity;
-      for (const [a, b] of offs) {
-        const ri = Math.min(Math.max(grid.i[q] + a, 0), ny - 1), cj = Math.min(Math.max(grid.j[q] + b, 0), nx - 1);
-        const v = img[ri * nx + cj];
-        if (v < mn) mn = v;
-      }
-      out[q] = mn;
-    }
-    return out;
-  }
-
-  /** Candidate order of TerrainPlanner.run: robust rate first, then rate, at least 5 grid steps apart. */
   /** Ranking score of TerrainPlanner.run: MSs connected first, then rate (BIG exceeds any rate). */
   const BIG = 1e10;
   function relayScore(g) { const s = new Float64Array(g.rate.length); for (let i = 0; i < s.length; i++) s[i] = g.reach[i] * BIG + g.rate[i]; return s; }
-  /** score / robScore: ranking score and its worst value within the robustness radius. */
-  function pickCandidates(grid, score, robScore, topK, margin) {
+  /** Candidate order of TerrainPlanner.rank / pick, at least 5 grid steps apart; the drone stands exactly at the point. */
+  function pickCandidates(grid, score, topK, margin) {
     const idx = Array.from({ length: score.length }, (_, i) => i);
     const mg = (i) => (margin ? margin[i] : 0), nr = (i) => Math.floor(score[i] / BIG);
     const cmp = (x, y) => (x > y ? -1 : x < y ? 1 : 0);  // descending, safe with +-Infinity
-    // MSs connected at the point first, then the robust score (= score when the radius is 0), the score
-    // (rate = scale / Dijkstra cost sum, so the lowest cost), then the weakest relay link (ties are common)
-    idx.sort((a, b) => cmp(nr(a), nr(b)) || cmp(robScore[a], robScore[b]) || cmp(score[a], score[b]) || cmp(mg(a), mg(b)) || (a - b));
+    // MSs connected first, then the score (rate = scale / Dijkstra cost sum, so the lowest cost), then the weakest
+    // relay link (ties are common)
+    idx.sort((a, b) => cmp(nr(a), nr(b)) || cmp(score[a], score[b]) || cmp(mg(a), mg(b)) || (a - b));
     const out = [];
     for (const i of idx) {
       if (out.every((j) => Math.hypot(grid.x[i] - grid.x[j], grid.y[i] - grid.y[j]) >= 5 * grid.step)) out.push(i);
@@ -741,17 +719,15 @@
     for (const n of NODE_NAMES) rel[n] = relayLinks(m, nodes[n], s.heights[n], s.tx[n], grid, 0, grid.x.length, s.heights.R, s.tx.R,
                                                  cableDb(m.p, n) + cableDb(m.p, "R"));
     const g = relayGrid(tab, rel, p);
-    const score = relayScore(g), robS = robust(grid, score, p.robust_radius_m);
-    const rob = Float64Array.from(robS, (v) => v - Math.floor(v / BIG) * BIG);
-    const cands = pickCandidates(grid, score, robS, p.top_k, g.margin);
+    const cands = pickCandidates(grid, relayScore(g), p.top_k, g.margin);
     const best = cands[0];
     const fin = finalTable(m, tab, nodes, s, [grid.x[best], grid.y[best]]);
-    return { tab, info, base, grid, rel, rate: g.rate, robust: rob, usesRelay: g.usesRelay, best: g.best, cands,
+    return { tab, info, base, grid, rel, rate: g.rate, usesRelay: g.usesRelay, best: g.best, cands,
              relay_xy: [grid.x[best], grid.y[best]], final_table: fin, final: decide(fin, p, true) };
   }
 
   const api = { cableDb, tableLevel, costOf, rateScale, edgeWeight, nodeTable, relayLinks, finalTable, plan, makeModel, rays, channelGain, eesmDb, budgetDb, linkEsnr, groundAt, decide, dijkstra, relayGrid,
-                treeFromPaths, relayScore, BIG, rankTrees, enumerateTrees, candidateGrid, robust, pickCandidates, MS_PATHS, NODE_NAMES, RELAY };
+                treeFromPaths, relayScore, BIG, rankTrees, enumerateTrees, candidateGrid, pickCandidates, MS_PATHS, NODE_NAMES, RELAY };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.AutoRelayEngine = api;
 })(typeof self !== "undefined" ? self : this);

@@ -308,7 +308,6 @@ details.card.help { padding: 12px 14px; border-top: 1px solid var(--line); }
             <label class="lab" for="hR">드론 높이</label>
             <div class="slider"><input id="hR" type="range" min="2" max="150" step="1" value="10"><output id="hRout" for="hR">10 m</output></div>
             <span class="lab">수면 위 드론</span><div class="seg" id="wseg"></div>
-            <span class="lab">위치 오차 반경</span><div class="seg" id="rseg"></div>
             <h3>장비·링크 예산</h3>
             <label class="lab" for="sens">수신감도</label>
             <div class="ctl"><input class="num" id="sens" type="number" step="1" inputmode="decimal"><span class="unit">dBm</span></div>
@@ -376,7 +375,7 @@ details.card.help { padding: 12px 14px; border-top: 1px solid var(--line); }
     sel: "BS", pos: {}, tx: null, hR: 10, relayMode: "auto", relayManual: null,
     dirty: false, savedAt: null, heat: true,
     live: null,       // {tab, info, base}
-    relay: null,      // {step, grid, rate, robust, usesRelay, best, cands, xy, final_table, final}
+    relay: null,      // {step, grid, rate, usesRelay, best, cands, xy, final_table, final}
     manual: null,     // {final_table, final} for a hand-placed relay
     preview: null,    // description of a compared tree drawn on the map
     showLinks: true,  // every link with its e-SNR on the map
@@ -386,7 +385,6 @@ details.card.help { padding: 12px 14px; border-top: 1px solid var(--line); }
     sens: null,       // receiver sensitivity [dBm] (null: config)
     cab: null,        // cable loss per node [dB] (null: config)
     fade: null,       // fade margin [dB] (null: config)
-    robust: null,     // drone placement-error radius [m]; 0 = rank by the Dijkstra cost alone (null: config)
   };
 
   // ---------------- geometry
@@ -736,12 +734,10 @@ details.card.help { padding: 12px 14px; border-top: 1px solid var(--line); }
     const c = collect;
     const tab = E.nodeTable(model, c.nm, c.s).tab;
     const g = E.relayGrid(tab, c.rel, P);
-    const score = E.relayScore(g), robS = E.robust(c.grid, score, P.robust_radius_m);
-    const rob = Float64Array.from(robS, (v) => v - Math.floor(v / E.BIG) * E.BIG);
-    const cands = E.pickCandidates(c.grid, score, robS, P.top_k, g.margin);
+    const cands = E.pickCandidates(c.grid, E.relayScore(g), P.top_k, g.margin);
     const b = cands[0], xy = [c.grid.x[b], c.grid.y[b]];
     const info = {}, ft = E.finalTable(model, tab, c.nm, c.s, xy, info);
-    state.relay = { gen: c.gen, step: c.step, grid: c.grid, rate: g.rate, robust: rob, usesRelay: g.usesRelay, cands, xy,
+    state.relay = { gen: c.gen, step: c.step, grid: c.grid, rate: g.rate, usesRelay: g.usesRelay, cands, xy,
                     final_table: ft, info, final: E.decide(ft, P, true) };
     drawHeat();
     if (c.rest.length) { runRelay(c.rest); }
@@ -808,6 +804,17 @@ details.card.help { padding: 12px 14px; border-top: 1px solid var(--line); }
     return { topo, tab, info, names };
   }
   const PAIRS = [["BS", "MS1"], ["BS", "MS2"], ["MS1", "MS2"], ["R", "BS"], ["R", "MS1"], ["R", "MS2"]];
+  // DL / UL order of a link: a used link reads parent -> child (its arrow); an unused one starts at the node with fewer
+  // hops to the BS in the shown tree (the BS itself first), keeping the table order on a tie
+  function dlOrder(topo, a, b) {
+    const links = topo ? topo.links : [];
+    const u = links.find(([p, c]) => (p === a && c === b) || (p === b && c === a));
+    if (u) return u;
+    const depth = { BS: 0 };
+    for (let k = 0; k < 4; k++) for (const [p, c] of links) if (depth[p] !== undefined && depth[c] === undefined) depth[c] = depth[p] + 1;
+    const da = depth[a] ?? Infinity, db = depth[b] ?? Infinity;
+    return db < da ? [b, a] : [a, b];
+  }
   function linkLabel(tab, a, b) {
     const x = tab[a + ">" + b], y = tab[b + ">" + a];
     return Math.abs(x - y) < 0.05 ? `${f1(x)} dB` : `${f1(x)}/${f1(y)} dB`;
@@ -839,10 +846,10 @@ details.card.help { padding: 12px 14px; border-top: 1px solid var(--line); }
         mk("line", { x1: A.u, y1: A.v, x2: B.u, y2: B.v, stroke: "#14232a", "stroke-opacity": 0.55, "stroke-width": 1.3 * inv,
                      "stroke-dasharray": `${5 * inv} ${4 * inv}` });
       }
-      // a used link shows the e-SNR in its arrow's direction only; an unused one both directions when they differ
-      const val = u ? tab[u[0] + ">" + u[1]] : tab[a + ">" + b];
+      // a used link shows the e-SNR in its arrow's (DL) direction only; an unused one DL/UL when they differ
+      const [d0, d1] = dlOrder(topo, a, b), val = tab[d0 + ">" + d1];
       if (state.showLinks) labels.push({ x: (A.u + B.u) / 2, y: (A.v + B.v) / 2, ax: A.u, ay: A.v, bx: B.u, by: B.v,
-                                         text: u ? `${f1(val)} dB` : linkLabel(tab, a, b), used: !!u, bad: val < 0 });
+                                         text: u ? `${f1(val)} dB` : linkLabel(tab, d0, d1), used: !!u, bad: val < 0 });
     }
     // keep clear of the pins and their name tags (tag: 12 px right, 22 px up of the pin, about 8 px per letter)
     const pins = [...NODES.filter((n) => state.pos[n.key]).map((n) => [n.key, state.pos[n.key]]), ...(relayOnMap() ? [["R", relayOnMap()]] : [])];
@@ -946,8 +953,6 @@ details.card.help { padding: 12px 14px; border-top: 1px solid var(--line); }
       : `잡음 = kTB + 잡음지수 ${P.noise_figure_db} dB.`;
     $("radionote").textContent += ` 케이블 손실은 무전기 단자~안테나 구간입니다(기본값: LMR-400급 0.17 dB/m, BS 약 15 m·MS 2 m·드론 짧은 점퍼, 커넥터 0.2 dB/개). 페이딩 여유는 모든 링크 e-SNR에서 뺍니다: 고정 운용 7 dB = ITU-R P.1546 위치 변동 표준편차 5.5 dB × 1.28(90 % 위치 신뢰), MS 이동 운용은 다중경로 몫 3 dB를 더해 10 dB. 현장 측정으로 모델 오차를 맞추면 줄일 수 있습니다.`;
     mk($("wseg"), [[true, "허용"], [false, "제외"]], state.onWater, (v) => { state.onWater = v; P.relay_on_water = v; redo(); });
-    mk($("rseg"), [[0, "끔"], [50, "50 m"], [100, "100 m"], [200, "200 m"]], P.robust_radius_m,
-       (v) => { P.robust_radius_m = state.robust = v; relayNote(); state.dirty = true; render(); scheduleRelay(); });
     const hr = $("hR");
     if (document.activeElement !== hr) hr.value = String(state.hR);
     $("hRout").textContent = state.hR + " m";
@@ -1072,14 +1077,14 @@ details.card.help { padding: 12px 14px; border-top: 1px solid var(--line); }
     const head = document.createElement("tr");
     const tbl = !!P.airtime, mean = P.traffic === "mean";
     const pw = tbl && mean && P.tx_power_min_dbm != null;
-    head.append(cell("th", "링크 · 경로"), cell("th", "→ dB"), cell("th", "← dB"),
+    head.append(cell("th", "링크 · 경로"), cell("th", "DL dB"), cell("th", "UL dB"),
                 ...(tbl ? [cell("th", mean ? "평균 · MCS" : "UL MCS")] : []), ...(pw ? [cell("th", "필요 출력")] : []), cell("th", "비용"));
     const thead = document.createElement("thead"); thead.append(head); t.append(thead);
     const tb = document.createElement("tbody");
     for (const [a0, b0] of PAIRS) {
       if (!names.includes(a0) || !names.includes(b0)) continue;
       const u = used.get([a0, b0].sort().join("|"));
-      const [a, b] = u || [a0, b0];  // used links read parent -> child (DL first)
+      const [a, b] = dlOrder(topo, a0, b0);  // a -> b is DL, b -> a is UL
       const x = tab[a + ">" + b], y = tab[b + ">" + a];
       const r = document.createElement("tr"); r.className = u ? "used" : "unused";
       const nm = cell("td", u ? `${a} → ${b} (사용)` : `${a} ↔ ${b}`, "name");
@@ -1094,7 +1099,7 @@ details.card.help { padding: 12px 14px; border-top: 1px solid var(--line); }
       tb.append(r);
     }
     t.append(tb);
-    $("tabnote").textContent = "→ 는 앞 노드가 송신(사용 중인 링크는 DL), ← 는 반대 방향(UL)의 e-SNR입니다." +
+    $("tabnote").textContent = "DL은 BS 쪽 노드가 보내는 방향(사용 중인 링크는 화살표 방향), UL은 그 반대 방향의 e-SNR입니다. 쓰지 않는 링크는 BS까지 홉 수가 적은 노드가 보내는 쪽을 DL로 봅니다." +
       (pw ? ` 필요 출력: 자동 송신출력(AGC)이 같은 MCS를 유지하면서 낮출 수 있는 출력(${state.tx} dBm에서 시작, 하한 ${P.tx_power_min_dbm} dBm).` : "");
   }
   function renderMatrix() {
@@ -1185,9 +1190,8 @@ details.card.help { padding: 12px 14px; border-top: 1px solid var(--line); }
     t.append(tb);
   }
   function relayNote() {
-    $("relaynote").textContent = `중계 위치는 ${P.grid_m} m 격자 후보(수면 위는 '수면 위 중계' 설정을 따름)에서 ` + (P.robust_radius_m >= P.grid_m
-      ? `① 연결되는 MS 수 ② 반경 ${P.robust_radius_m} m 안의 최악값(연결 MS 수, 다익스트라 비용 합) ③ 그 지점의 비용 합 ④ 동점이면 드론 링크의 최소 e-SNR이 큰 곳 순으로 고릅니다.`
-      : "① 연결되는 MS 수 ② 다익스트라 비용 합(작을수록) ③ 동점이면 드론 링크의 최소 e-SNR이 큰 곳 순으로 고릅니다. 비용이 4단계뿐이라 같은 비용인 곳이 많아 ③이 필요합니다.");
+    $("relaynote").textContent = `중계 위치는 ${P.grid_m} m 격자 후보(수면 위는 '수면 위 드론' 설정을 따름)에서 ` +
+      "① 연결되는 MS 수 ② 다익스트라 비용 합(작을수록) ③ 동점이면 드론 링크의 최소 e-SNR이 큰 곳 순으로 고릅니다. 비용이 4단계뿐이라 같은 비용인 곳이 많아 ③이 필요합니다. 드론은 계산한 자리에 정확히 선다고 봅니다.";
   }
   function render() { renderNodes(); renderSegs(); renderPins(); renderResult(); renderTable(); renderMatrix(); renderOptions(); renderStatus(); }
 
@@ -1264,7 +1268,6 @@ details.card.help { padding: 12px 14px; border-top: 1px solid var(--line); }
     if (state.sens !== null && P.rx_sensitivity_dbm != null) P.rx_sensitivity_dbm = state.sens;
     if (state.cab !== null) P.cable_loss_db = Object.assign({}, state.cab);
     if (state.fade !== null) P.fade_margin_db = state.fade;
-    if (state.robust !== null) P.robust_radius_m = state.robust;
     if (P.airtime) { if (state.snr) P.airtime.snr_db = state.snr.slice(); }
     model = E.makeModel(TD);
     NODES = [
