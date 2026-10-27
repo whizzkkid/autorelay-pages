@@ -356,7 +356,7 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
           <details class="help" id="help-cond">
             <summary>계산 기준</summary>
             <p class="note" id="radionote"></p>
-            <p class="note"><span id="pxnote"></span> <span id="relaynote"></span> 손을 떼면 100 m 격자로 먼저 보여 준 뒤 설정 격자로 다듬습니다. 같은 위치를 Python으로 계산한 값과 e-SNR 차이 중앙값은 0.002 dB입니다.</p>
+            <p class="note"><span id="pxnote"></span> <span id="relaynote"></span> <span id="stagenote"></span> 같은 위치를 Python으로 계산한 값과 e-SNR 차이 중앙값은 0.002 dB입니다.</p>
             <p class="note">계산식은 Python 프레임워크와 같습니다: 1.5 GHz, 채널 7 MHz 중 유효 대역폭 6 MHz, 수신감도 기준 e-SNR, EESM, 양방향 평균 e-SNR의 점유시간 표로 다익스트라. BS·MS는 지면에만, 드론은 수면 위에도 놓을 수 있습니다.</p>
           </details>
         </div>
@@ -1380,8 +1380,9 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
     t.append(tb);
   }
   function relayNote() {
-    $("relaynote").textContent = `중계 위치는 ${P.grid_m} m 격자 후보(수면 위는 '수면 위 드론' 설정을 따름)에서 ` +
-      "① 연결되는 MS 수 ② 다익스트라 비용 합(작을수록) ③ 동점이면 드론 링크의 최소 e-SNR이 큰 곳 순으로 고릅니다. 비용이 4단계뿐이라 같은 비용인 곳이 많아 ③이 필요합니다. 드론은 계산한 자리에 정확히 선다고 봅니다.";
+    $("relaynote").textContent = `드론 위치는 지도 전체에 ${P.grid_m} m 간격으로 깔아 둔 후보 지점(가장자리 ${P.border_m} m 제외, 수면 위는 '수면 위 드론' 설정을 따름) 가운데서 고르므로 ${P.grid_m} m 단위로 정해집니다. ` +
+      "순서는 ① 연결되는 MS 수 ② 다익스트라 비용 합(작을수록) ③ 동점이면 드론 링크의 최소 e-SNR이 큰 곳입니다. 비용이 4단계뿐이라 같은 비용인 곳이 많아 ③이 필요합니다. 드론은 계산한 자리에 정확히 선다고 봅니다.";
+    $("stagenote").textContent = `후보가 수만 곳이라 계산에 몇 초가 걸립니다. 그래서 노드를 옮기고 손을 떼면 먼저 100 m 간격 후보로 빠르게 계산해 보여 주고, 이어서 ${P.grid_m} m 간격 후보 전체를 계산해 결과를 바꿉니다. 드론 위치가 잠시 뒤 조금 움직일 수 있는 이유입니다.`;
   }
   function render() { renderNodes(); renderSegs(); renderPins(); renderResult(); renderTable(); renderMatrix(); renderOptions(); renderStatus(); }
 
@@ -1486,7 +1487,7 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
     for (const el of tileEls.values()) el.remove();
     tileEls.clear();
     renderAttrib();
-    $("pxnote").textContent = `BS ${P.heights_m.BS} m, MS ${P.heights_m.MS1} m 안테나(지면 기준). 지도 1픽셀은 약 ${Math.round(MPP)} m입니다. `;
+    $("pxnote").textContent = `BS ${P.heights_m.BS} m, MS ${P.heights_m.MS1} m 안테나(지면 기준). 지도 그림의 한 칸(1픽셀)은 실제 약 ${Math.round(MPP)} m이고, 노드 위치와 지형 높이는 이 칸 단위로 다룹니다. `;
     relayNote();
     if (hiddenRegions.delete(r.id)) {  // a saved pick of a hidden region shows it again
       try { localStorage.setItem("autorelay.hiddenRegions", JSON.stringify([...hiddenRegions])); } catch {}
