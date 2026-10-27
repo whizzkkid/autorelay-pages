@@ -373,12 +373,6 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
             <h2>채널 점유시간 표 (MCS 경계)</h2>
             <div class="tablewrap"><table class="airtime" id="airtab" aria-label="채널 점유시간 표"></table></div>
           </div>
-          <details class="help" id="help-cond">
-            <summary>계산 기준</summary>
-            <p class="note" id="radionote"></p>
-            <p class="note"><span id="pxnote"></span> <span id="relaynote"></span> <span id="stagenote"></span> 같은 위치를 Python으로 계산한 값과 e-SNR 차이 중앙값은 0.002 dB입니다.</p>
-            <p class="note">계산식은 Python 프레임워크와 같습니다: 1.5 GHz, 채널 7 MHz 중 유효 대역폭 6 MHz, 수신감도 기준 e-SNR, EESM, 양방향 평균 e-SNR의 점유시간 표로 다익스트라. BS·MS는 지면에만, 드론은 수면 위에도 놓을 수 있습니다.</p>
-          </details>
         </div>
 
         <div class="tabpanel" role="tabpanel" id="tp-links" aria-labelledby="tab-links" hidden>
@@ -1105,10 +1099,6 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
     if (document.activeElement !== $("fade")) $("fade").value = String(fd);
     $("fadeout").textContent = fd + " dB";
     mk($("fseg"), FADES.map(([v, label]) => [v, label]), fd, (v) => setFade(v, true));
-    $("radionote").textContent = P.rx_sensitivity_dbm != null
-      ? `e-SNR = 수신전력 − 수신감도 + ${P.sensitivity_snr_db || 0} dB (수신감도에서 MCS${P.airtime ? P.airtime.mcs[0] : 1} 하한). 송신출력은 자동(AGC)이라 최대 출력으로 계산하고, 링크 표에 같은 MCS를 유지하는 최소 출력(하한 ${P.tx_power_min_dbm ?? "-"} dBm)을 보여 줍니다.`
-      : `잡음 = kTB + 잡음지수 ${P.noise_figure_db} dB.`;
-    $("radionote").textContent += ` 케이블 손실은 무전기 단자~안테나 구간입니다(기본값: LMR-400급 0.17 dB/m, BS 약 15 m·MS 2 m·드론 짧은 점퍼, 커넥터 0.2 dB/개). 페이딩 여유는 모든 링크 e-SNR에서 뺍니다: 고정 운용 7 dB = ITU-R P.1546 위치 변동 표준편차 5.5 dB × 1.28(90 % 위치 신뢰), MS 이동 운용은 다중경로 몫 3 dB를 더해 10 dB. 현장 측정으로 모델 오차를 맞추면 줄일 수 있습니다.`;
     mk($("wseg"), [[true, "허용"], [false, "제외"]], state.onWater, (v) => { state.onWater = v; P.relay_on_water = v; redo(); });
     const hr = $("hR");
     if (document.activeElement !== hr) hr.value = String(state.hR);
@@ -1418,13 +1408,6 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
                      cur.final, cur.final.alternatives.slice(0, 5), cur.final_table);
     t.append(tb);
   }
-  function relayNote() {
-    $("relaynote").textContent = `드론 위치는 지도 전체에 ${P.grid_m} m 간격으로 깔아 둔 후보 지점(가장자리 ${P.border_m} m 제외, 수면 위는 '수면 위 드론' 설정을 따름)에서 상위 ${P.top_k}곳을 고른 뒤, ` +
-      (P.fine_m ? `그 주변 ${P.fine_radius_m || 1.5 * P.grid_m} m 안을 ${P.fine_m} m 간격으로 다시 살펴 ${P.fine_m} m 단위로 정합니다. ` : "") +
-      "순서는 ① 연결되는 MS 수 ② 다익스트라 비용 합(작을수록) ③ 동점이면 드론 링크의 최소 e-SNR이 큰 곳입니다. 비용이 4단계뿐이라 같은 비용인 곳이 많아 ③이 필요합니다. 드론은 계산한 자리에 정확히 선다고 봅니다.";
-    $("stagenote").textContent = `후보가 수만 곳이라 계산에 몇 초가 걸립니다. 그래서 노드를 옮기고 손을 떼면 먼저 100 m 간격 후보로 빠르게 계산해 보여 주고, 이어서 ${P.grid_m} m 간격 후보 전체`
-      + (P.fine_m ? `, 마지막으로 후보 주변 ${P.fine_m} m 간격` : "") + `을 계산해 결과를 바꿉니다. 드론 위치가 잠시 뒤 조금 움직일 수 있는 이유입니다.`;
-  }
   function render() { renderNodes(); renderSegs(); renderPins(); renderResult(); renderTable(); renderMatrix(); renderOptions(); renderStatus(); }
 
   function setUseRelay(on) {
@@ -1528,8 +1511,6 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
     for (const el of tileEls.values()) el.remove();
     tileEls.clear();
     renderAttrib();
-    $("pxnote").textContent = `BS ${P.heights_m.BS} m, MS ${P.heights_m.MS1} m 안테나(지면 기준). 지도 그림의 한 칸(1픽셀)은 실제 약 ${Math.round(MPP)} m입니다. 지형 높이는 이 칸마다 하나씩(원자료 Copernicus 30 m를 보간) 들어 있고, 노드는 칸 사이 어디든 찍을 수 있습니다. `;
-    relayNote();
     if (hiddenRegions.delete(r.id)) {  // a saved pick of a hidden region shows it again
       try { localStorage.setItem("autorelay.hiddenRegions", JSON.stringify([...hiddenRegions])); } catch {}
       renderRegionSelect(); renderRegionList();
