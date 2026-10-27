@@ -121,6 +121,10 @@ select, .field input[type="search"] {
 .rate { font: 600 1.3rem/1.2 var(--font-mono); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
 .desc { color: var(--muted); font-size: .8rem; font-family: var(--font-mono); word-break: break-word; flex-basis: 100%; }
 .gain { font: 600 .85rem var(--font-body); color: var(--ok-ink); }
+.tree { flex-basis: 100%; min-width: 0; overflow-x: auto; }
+.tree svg { display: block; max-width: none; }
+.tree text { font: 600 11px var(--font-mono); fill: var(--ink); }
+.tree text.off { fill: var(--muted); font-weight: 500; }
 .state { font-size: .78rem; color: var(--muted); display: flex; align-items: center; gap: 8px; }
 .state .bar { flex: 1; height: 3px; background: var(--soft); border-radius: 2px; overflow: hidden; min-width: 40px; }
 .state .bar b { display: block; height: 100%; width: 0; background: var(--accent); }
@@ -277,7 +281,6 @@ details.card.help { padding: 12px 14px; border-top: 1px solid var(--line); }
       <section class="sheet card summary" aria-label="결과">
         <h2>결과</h2>
         <div class="result" id="result"></div>
-        <div class="tablewrap"><table class="cmat" id="routes" aria-label="통제국까지 최단 경로"></table></div>
         <div class="state" id="state"><span id="statetext">지형 자료를 불러오는 중</span><span class="bar"><b id="prog"></b></span></div>
         <div class="actions">
           <button class="btn" id="save" type="button" disabled>위치 저장</button>
@@ -1043,19 +1046,64 @@ details.card.help { padding: 12px 14px; border-top: 1px solid var(--line); }
     const span = (cls, t) => { const s = document.createElement("span"); s.className = cls; s.textContent = t; return s; };
     if (!state.live) { row("상태", [span("desc", "세 노드를 모두 찍으면 계산합니다")]); return; }
     const b = state.live.base;
-    row("중계 없음", [span("topo", b.label), document.createTextNode("  "), span("rate", b.rate_bps > 0 ? mbps(b.rate_bps) : "불가"), document.createElement("br"), span("desc", b.description)]);
-    const cur = current();
+    row("중계 없음", [span("topo", b.label), span("rate", b.rate_bps > 0 ? mbps(b.rate_bps) : "불가"), treeSvg(b)]);
+    const cur = current(), lab = state.relayMode === "manual" ? "중계 있음 (직접)" : "중계 있음";
     if (cur) {
-      const nb = (b.reachable || []).length, nf = (f => (f.reachable || []).length)(cur.final);
-      const f = cur.final, g = b.rate_bps > 0 && nb === nf ? f.rate_bps / b.rate_bps : Infinity;
-      const kids = [span("topo", f.label), document.createTextNode("  "), span("rate", f.rate_bps > 0 ? mbps(f.rate_bps) : "불가")];
-      if (nf !== nb) kids.push(document.createTextNode("  "), span("gain", `연결 MS ${nb} → ${nf}`));
-      if (f.usesRelay && isFinite(g)) kids.push(document.createTextNode("  "), span("gain", "×" + (g >= 10 ? g.toFixed(0) : g.toFixed(2))));
-      kids.push(document.createElement("br"), span("desc", f.usesRelay || !f.reachable || !f.reachable.length ? f.description : "중계기를 거치지 않는 편이 낫습니다"));
-      row(state.relayMode === "manual" ? "드론 (직접)" : "드론 중계", kids);
+      const nb = (b.reachable || []).length, f = cur.final, nf = (f.reachable || []).length;
+      const kids = [span("topo", f.label), span("rate", f.rate_bps > 0 ? mbps(f.rate_bps) : "불가")];
+      if (nf !== nb) kids.push(span("gain", `연결 MS ${nb} → ${nf}`));
+      kids.push(f.usesRelay || !nf ? treeSvg(f) : span("desc", "중계기를 거치지 않는 편이 낫습니다"));
+      row(lab, kids);
     } else {
-      row("드론 중계", [span("desc", "계산 중…")]);
+      row(lab, [span("desc", "계산 중…")]);
     }
+  }
+  // topology picture: BS on the left, each hop one column to the right (arrows = DL), MSs without a path greyed out
+  function treeSvg(dec) {
+    const ns = "http://www.w3.org/2000/svg", links = dec.links || [];
+    const depth = { BS: 0 }, kids = {};
+    for (let k = 0; k < 4; k++) for (const [p, c] of links) if (depth[p] !== undefined && depth[c] === undefined) { depth[c] = depth[p] + 1; (kids[p] = kids[p] || []).push(c); }
+    const off = ["MS1", "MS2"].filter((n) => depth[n] === undefined);
+    // tidy tree: leaves take one row each in depth-first order, a parent sits at the middle of its children;
+    // MSs without a path go below, one column right of the BS, with no arrow
+    const order = (n) => ["BS", "R", "MS1", "MS2"].indexOf(n), CW = 78, RH = 48, X0 = 22, pos = {};
+    let row = 0;
+    const place = (n) => {
+      const ch = (kids[n] || []).sort((x, y) => order(x) - order(y));
+      const ys = ch.map(place);
+      const y = ys.length ? (ys[0] + ys[ys.length - 1]) / 2 : row++;
+      pos[n] = { x: X0 + depth[n] * CW, y };
+      return y;
+    };
+    place("BS");
+    if (!links.length) row = 0;  // nothing connected: the MSs stand beside the BS
+    for (const n of off) pos[n] = { x: X0 + CW, y: row++ };
+    if (!links.length) pos.BS.y = (row - 1) / 2;
+    for (const q of Object.values(pos)) q.y = 14 + q.y * RH;
+    const W = Math.max(...Object.values(pos).map((q) => q.x)) + 40, H = row * RH + 6;
+    const svg = document.createElementNS(ns, "svg");
+    svg.setAttribute("width", W); svg.setAttribute("height", H); svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    svg.setAttribute("role", "img");
+    svg.setAttribute("aria-label", "토폴로지: " + (links.length ? links.map(([p, c]) => `${p}→${c}`).join(", ") : "연결 없음")
+      + (off.length ? ` (${off.join(", ")} 경로 없음)` : ""));
+    const mk = (tag, attrs, text) => { const e = document.createElementNS(ns, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (text) e.textContent = text; svg.append(e); return e; };
+    for (const [p, c] of links) {
+      const A = pos[p], B = pos[c], L = Math.hypot(B.x - A.x, B.y - A.y), ux = (B.x - A.x) / L, uy = (B.y - A.y) / L;
+      mk("line", { x1: A.x + ux * 10, y1: A.y + uy * 10, x2: B.x - ux * 12, y2: B.y - uy * 12, style: "stroke:var(--ink);stroke-width:1.6" });
+      const tx = B.x - ux * 11, ty = B.y - uy * 11, s = 6;
+      mk("polygon", { points: [[tx, ty], [tx - ux * s - uy * s * 0.6, ty - uy * s + ux * s * 0.6], [tx - ux * s + uy * s * 0.6, ty - uy * s - ux * s * 0.6]].map((q) => q.join(",")).join(" "),
+                      style: "fill:var(--ink)" });
+    }
+    const color = { BS: "var(--bs)", MS1: "var(--ms1)", MS2: "var(--ms2)", R: "var(--relay)" };
+    for (const [n, q] of Object.entries(pos)) {
+      const dead = off.includes(n), st = `fill:${dead ? "var(--soft)" : color[n]};stroke:${dead ? "var(--muted)" : "var(--sheet)"};stroke-width:2` + (dead ? ";stroke-dasharray:3 2" : "");
+      if (n === "R") mk("rect", { x: q.x - 7, y: q.y - 7, width: 14, height: 14, rx: 2, transform: `rotate(45 ${q.x} ${q.y})`, style: st });
+      else mk("circle", { cx: q.x, cy: q.y, r: 8, style: st });
+      mk("text", { x: q.x, y: q.y + 21, "text-anchor": "middle", class: dead ? "off" : "" }, n);
+      if (dead) mk("text", { x: q.x, y: q.y + 32, "text-anchor": "middle", class: "off" }, "경로 없음");
+    }
+    const box = document.createElement("div"); box.className = "tree"; box.append(svg);
+    return box;
   }
   function linkState(i) {
     if (!i) return "";
@@ -1104,7 +1152,6 @@ details.card.help { padding: 12px 14px; border-top: 1px solid var(--line); }
   }
   function renderMatrix() {
     const t = $("cmat"); t.replaceChildren();
-    const r = $("routes"); r.replaceChildren();
     if (!state.live) return;
     const { topo, tab, names } = shown();
     const cost = E.costOf(P), on = new Set((topo ? topo.links : []).map(([a, b]) => [a, b].sort().join("|")));
@@ -1122,20 +1169,6 @@ details.card.help { padding: 12px 14px; border-top: 1px solid var(--line); }
       tb.append(row);
     }
     t.append(tb);
-    const cur = current(), dec = cur ? cur.final : state.live.base;
-    if (!dec || !dec.routes) return;
-    const rh = document.createElement("tr"); rh.append(cell("th", "무선통신기", "lft"), cell("th", "통제국(BS)까지 최단 경로", "lft"), cell("th", "비용 합"));
-    const rth = document.createElement("thead"); rth.append(rh); r.append(rth);
-    const rb = document.createElement("tbody");
-    for (const n of Object.keys(dec.routes)) {
-      if (n === "BS") continue;
-      const v = dec.routes[n];
-      const row = document.createElement("tr");
-      row.append(cell("td", n, "lft"), cell("td", v.path ? v.path.join(" → ") : "유효 경로 없음", "lft" + (v.path ? "" : " inf")),
-                 cell("td", isFinite(v.cost) ? String(+v.cost.toFixed(2)) : "∞", isFinite(v.cost) ? "" : "inf"));
-      rb.append(row);
-    }
-    r.append(rb);
   }
   function command() {
     if (!allPlaced()) return "";
