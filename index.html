@@ -841,8 +841,10 @@ details.card.help { padding: 12px 14px; border-top: 1px solid var(--line); }
         mk("line", { x1: A.u, y1: A.v, x2: B.u, y2: B.v, stroke: "#14232a", "stroke-opacity": 0.55, "stroke-width": 1.3 * inv,
                      "stroke-dasharray": `${5 * inv} ${4 * inv}` });
       }
+      // a used link shows the e-SNR in its arrow's direction only; an unused one both directions when they differ
+      const val = u ? tab[u[0] + ">" + u[1]] : tab[a + ">" + b];
       if (state.showLinks) labels.push({ x: (A.u + B.u) / 2, y: (A.v + B.v) / 2, ax: A.u, ay: A.v, bx: B.u, by: B.v,
-                                         text: linkLabel(tab, a, b), used: !!u, bad: tab[a + ">" + b] < 0 });
+                                         text: u ? `${f1(val)} dB` : linkLabel(tab, a, b), used: !!u, bad: val < 0 });
     }
     // keep clear of the pins and their name tags (tag: 12 px right, 22 px up of the pin, about 8 px per letter)
     const pins = [...NODES.filter((n) => state.pos[n.key]).map((n) => [n.key, state.pos[n.key]]), ...(relayOnMap() ? [["R", relayOnMap()]] : [])];
