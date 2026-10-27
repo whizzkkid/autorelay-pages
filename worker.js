@@ -14,9 +14,10 @@ self.onmessage = (ev) => {
   }
   if (q.type !== "relay" || !model) return;
   if (q.radio) Object.assign(model.p, q.radio);  // EESM beta / sensitivity edited on the page
-  const key = q.step + "/" + q.border + "/" + q.onWater;
-  const grid = grids[key] || (grids[key] = E.candidateGrid(model, q.step, q.border, q.onWater));
-  const r = E.relayLinks(model, q.node, q.hNode, q.txNode, grid, q.i0, q.i1, q.hR, q.txR, q.cab);
+  let grid, i0 = q.i0, i1 = q.i1;
+  if (q.pts) { grid = q.pts; i0 = 0; i1 = q.pts.x.length; }  // fine search: the points come with the job
+  else { const key = q.step + "/" + q.border + "/" + q.onWater; grid = grids[key] || (grids[key] = E.candidateGrid(model, q.step, q.border, q.onWater)); }
+  const r = E.relayLinks(model, q.node, q.hNode, q.txNode, grid, i0, i1, q.hR, q.txR, q.cab);
   self.postMessage({ type: "relay", job: q.job, gen: q.gen, name: q.name, i0: q.i0, to: r.to, from: r.from },
                    [r.to.buffer, r.from.buffer]);
 };

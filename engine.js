@@ -648,6 +648,38 @@
              ny: ys.length, nx: xs.length, step };
   }
 
+  /** TerrainPlanner.local_grid: a `step` lattice (anchored at each centre) within `radius` of a centre; win = centre index. */
+  function localGrid(m, centers, step, radius, border, onWater) {
+    if (onWater === undefined) onWater = !!m.p.relay_on_water;
+    const Wm = m.W * m.mpp, Hm = m.H * m.mpp, k = Math.ceil(radius / step), seen = new Set();
+    const x = [], y = [], win = [];
+    centers.forEach(([cx, cy], w) => {
+      for (let b = -k; b <= k; b++) for (let a = -k; a <= k; a++) {
+        if ((a * a + b * b) * step * step > radius * radius + 1e-9) continue;
+        const px = cx + a * step, py = cy + b * step;
+        if (px < border || px > Wm - border || py < border || py > Hm - border) continue;
+        const key = Math.round(px * 1e3) + "," + Math.round(py * 1e3);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const col = Math.min(Math.max(roundHalfEven(px / m.mpp - 0.5), 0), m.W - 1);
+        const row = Math.min(Math.max(roundHalfEven(m.H - py / m.mpp - 0.5), 0), m.H - 1);
+        if (m.water[row * m.W + col] && !onWater) continue;
+        x.push(px); y.push(py); win.push(w);
+      }
+    });
+    return { x: Float64Array.from(x), y: Float64Array.from(y), win: Int32Array.from(win), step, nwin: centers.length };
+  }
+  /** TerrainPlanner.refine: the first point of every window in ranking order (windows ordered the same way). */
+  function refinePick(fg, score, margin) {
+    const idx = Array.from({ length: score.length }, (_, i) => i);
+    const mg = (i) => (margin ? margin[i] : 0), nr = (i) => Math.floor(score[i] / BIG);
+    const cmp = (x, y) => (x > y ? -1 : x < y ? 1 : 0);
+    idx.sort((a, b) => cmp(nr(a), nr(b)) || cmp(score[a], score[b]) || cmp(mg(a), mg(b)) || (a - b));
+    const first = new Set(), out = [];
+    for (const i of idx) if (!first.has(fg.win[i])) { first.add(fg.win[i]); out.push(i); }
+    return out;
+  }
+
   /** Ranking score of TerrainPlanner.run: MSs connected first, then rate (BIG exceeds any rate). */
   const BIG = 1e10;
   function relayScore(g) { const s = new Float64Array(g.rate.length); for (let i = 0; i < s.length; i++) s[i] = g.reach[i] * BIG + g.rate[i]; return s; }
@@ -720,14 +752,25 @@
                                                  cableDb(m.p, n) + cableDb(m.p, "R"));
     const g = relayGrid(tab, rel, p);
     const cands = pickCandidates(grid, relayScore(g), p.top_k, g.margin);
-    const best = cands[0];
-    const fin = finalTable(m, tab, nodes, s, [grid.x[best], grid.y[best]]);
-    return { tab, info, base, grid, rel, rate: g.rate, usesRelay: g.usesRelay, best: g.best, cands,
-             relay_xy: [grid.x[best], grid.y[best]], final_table: fin, final: decide(fin, p, true) };
+    let xy = [grid.x[cands[0]], grid.y[cands[0]]], fine = null;
+    if (p.fine_m && p.fine_m < grid.step && cands.length) {  // TerrainPlanner.refine
+      const fg = localGrid(m, cands.map((i) => [grid.x[i], grid.y[i]]), p.fine_m, p.fine_radius_m || 1.5 * grid.step, p.border_m, !!p.relay_on_water);
+      if (fg.x.length) {
+        const frel = {};
+        for (const n of NODE_NAMES) frel[n] = relayLinks(m, nodes[n], s.heights[n], s.tx[n], fg, 0, fg.x.length, s.heights.R, s.tx.R,
+                                                      cableDb(m.p, n) + cableDb(m.p, "R"));
+        const fgr = relayGrid(tab, frel, p), picks = refinePick(fg, relayScore(fgr), fgr.margin);
+        xy = [fg.x[picks[0]], fg.y[picks[0]]];
+        fine = { grid: fg, rate: fgr.rate, usesRelay: fgr.usesRelay, cands: picks };
+      }
+    }
+    const fin = finalTable(m, tab, nodes, s, xy);
+    return { tab, info, base, grid, rel, rate: g.rate, usesRelay: g.usesRelay, best: g.best, cands, fine,
+             relay_xy: xy, final_table: fin, final: decide(fin, p, true) };
   }
 
   const api = { cableDb, tableLevel, costOf, rateScale, edgeWeight, nodeTable, relayLinks, finalTable, plan, makeModel, rays, channelGain, eesmDb, budgetDb, linkEsnr, groundAt, decide, dijkstra, relayGrid,
-                treeFromPaths, relayScore, BIG, rankTrees, enumerateTrees, candidateGrid, pickCandidates, MS_PATHS, NODE_NAMES, RELAY };
+                treeFromPaths, relayScore, BIG, rankTrees, enumerateTrees, candidateGrid, localGrid, refinePick, pickCandidates, MS_PATHS, NODE_NAMES, RELAY };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.AutoRelayEngine = api;
 })(typeof self !== "undefined" ? self : this);

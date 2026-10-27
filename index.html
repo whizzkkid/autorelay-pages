@@ -740,7 +740,7 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
   }
   function scheduleRelay() {
     clearTimeout(relayTimer);
-    relayTimer = setTimeout(() => runRelay([100, P.grid_m]), 120);
+    relayTimer = setTimeout(() => runRelay([100, P.grid_m, { fine: P.fine_m }]), 120);
   }
   function runRelay(steps) {
     if (!allPlaced()) {
@@ -750,14 +750,27 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
     }
     gen++;
     queue = [];
-    const step = steps[0], grid = E.candidateGrid(model, step, P.border_m, state.onWater), N = grid.x.length;
     const nm = nodesM(), s = settings();
+    const fineStage = typeof steps[0] === "object";
+    let step, grid;
+    if (fineStage) {  // around every candidate of the finished grid stage (TerrainPlanner.refine)
+      const prev = state.relay;
+      if (!prev || !prev.cands || !steps[0].fine || steps[0].fine >= prev.step) { runRelay(steps.slice(1)); return; }
+      step = steps[0].fine;
+      grid = E.localGrid(model, prev.cands.map((i) => [prev.grid.x[i], prev.grid.y[i]]), step, P.fine_radius_m || 1.5 * prev.step, P.border_m, state.onWater);
+      if (!grid.x.length) { runRelay(steps.slice(1)); return; }
+    } else {
+      step = steps[0]; grid = E.candidateGrid(model, step, P.border_m, state.onWater);
+    }
+    const N = grid.x.length;
     const chunk = Math.max(400, Math.ceil(N / (pool.length * 6 || 12)));
-    collect = { gen, step, rest: steps.slice(1), grid, rel: {}, total: 0, left: 0, nm, s };
+    collect = { gen, step, fine: fineStage, rest: steps.slice(1), grid, rel: {}, total: 0, left: 0, nm, s };
     for (const n of E.NODE_NAMES) {
       collect.rel[n] = { to: new Float32Array(N), from: new Float32Array(N) };
       for (let i0 = 0; i0 < N; i0 += chunk) {
-        queue.push({ type: "relay", job: ++jobSeq, gen, name: n, step, border: P.border_m, i0, i1: Math.min(N, i0 + chunk),
+        const i1 = Math.min(N, i0 + chunk);
+        queue.push({ type: "relay", job: ++jobSeq, gen, name: n, step, border: P.border_m, i0, i1,
+                     pts: fineStage ? { x: grid.x.slice(i0, i1), y: grid.y.slice(i0, i1) } : undefined,
                      node: nm[n], hNode: s.heights[n], txNode: s.tx[n], hR: s.heights.R, txR: s.tx.R, onWater: state.onWater,
                      cab: E.cableDb(P, n) + E.cableDb(P, "R"),
                      radio: { eesm_beta: P.eesm_beta, rx_sensitivity_dbm: P.rx_sensitivity_dbm, fade_margin_db: P.fade_margin_db } });
@@ -765,7 +778,8 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
       }
     }
     collect.left = collect.total;
-    $("statetext").textContent = `중계 위치 계산 중 (${step} m 격자, 후보 ${N.toLocaleString("ko-KR")}곳)`;
+    $("statetext").textContent = fineStage ? `드론 위치 정밀 계산 중 (후보 주변 ${step} m 간격, ${N.toLocaleString("ko-KR")}곳)`
+      : `중계 위치 계산 중 (${step} m 격자, 후보 ${N.toLocaleString("ko-KR")}곳)`;
     $("prog").style.width = "0%";
     pump();
   }
@@ -773,14 +787,23 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
     const c = collect;
     const tab = E.nodeTable(model, c.nm, c.s).tab;
     const g = E.relayGrid(tab, c.rel, P);
-    const cands = E.pickCandidates(c.grid, E.relayScore(g), P.top_k, g.margin);
-    const b = cands[0], xy = [c.grid.x[b], c.grid.y[b]];
+    let xy, done;
+    if (c.fine) {  // keep the grid stage (heat map, candidates); only the drone position is refined
+      const picks = E.refinePick(c.grid, E.relayScore(g), g.margin), prev = state.relay;
+      xy = [c.grid.x[picks[0]], c.grid.y[picks[0]]];
+      Object.assign(prev, { gen: c.gen, xy, fine: { step: c.step, n: c.grid.x.length, picks: picks.map((i) => [c.grid.x[i], c.grid.y[i]]) } });
+      done = `계산 완료 (${prev.step} m 격자 ${prev.grid.x.length.toLocaleString("ko-KR")}곳 + 후보 주변 ${c.step} m 간격 ${c.grid.x.length.toLocaleString("ko-KR")}곳)`;
+    } else {
+      const cands = E.pickCandidates(c.grid, E.relayScore(g), P.top_k, g.margin), b = cands[0];
+      xy = [c.grid.x[b], c.grid.y[b]];
+      state.relay = { gen: c.gen, step: c.step, grid: c.grid, rate: g.rate, usesRelay: g.usesRelay, cands, xy, fine: null };
+      done = `계산 완료 (${c.step} m 격자, 후보 ${c.grid.x.length.toLocaleString("ko-KR")}곳)`;
+    }
     const info = {}, ft = E.finalTable(model, tab, c.nm, c.s, xy, info);
-    state.relay = { gen: c.gen, step: c.step, grid: c.grid, rate: g.rate, usesRelay: g.usesRelay, cands, xy,
-                    final_table: ft, info, final: E.decide(ft, P, true) };
+    Object.assign(state.relay, { final_table: ft, info, final: E.decide(ft, P, true) });
     drawHeat();
     if (c.rest.length) { runRelay(c.rest); }
-    else { collect = null; $("statetext").textContent = `계산 완료 (${c.step} m 격자, 후보 ${c.grid.x.length.toLocaleString("ko-KR")}곳)`; $("prog").style.width = "100%"; }
+    else { collect = null; $("statetext").textContent = done; $("prog").style.width = "100%"; }
     render();
   }
 
@@ -1380,9 +1403,11 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
     t.append(tb);
   }
   function relayNote() {
-    $("relaynote").textContent = `드론 위치는 지도 전체에 ${P.grid_m} m 간격으로 깔아 둔 후보 지점(가장자리 ${P.border_m} m 제외, 수면 위는 '수면 위 드론' 설정을 따름) 가운데서 고르므로 ${P.grid_m} m 단위로 정해집니다. ` +
+    $("relaynote").textContent = `드론 위치는 지도 전체에 ${P.grid_m} m 간격으로 깔아 둔 후보 지점(가장자리 ${P.border_m} m 제외, 수면 위는 '수면 위 드론' 설정을 따름)에서 상위 ${P.top_k}곳을 고른 뒤, ` +
+      (P.fine_m ? `그 주변 ${P.fine_radius_m || 1.5 * P.grid_m} m 안을 ${P.fine_m} m 간격으로 다시 살펴 ${P.fine_m} m 단위로 정합니다. ` : "") +
       "순서는 ① 연결되는 MS 수 ② 다익스트라 비용 합(작을수록) ③ 동점이면 드론 링크의 최소 e-SNR이 큰 곳입니다. 비용이 4단계뿐이라 같은 비용인 곳이 많아 ③이 필요합니다. 드론은 계산한 자리에 정확히 선다고 봅니다.";
-    $("stagenote").textContent = `후보가 수만 곳이라 계산에 몇 초가 걸립니다. 그래서 노드를 옮기고 손을 떼면 먼저 100 m 간격 후보로 빠르게 계산해 보여 주고, 이어서 ${P.grid_m} m 간격 후보 전체를 계산해 결과를 바꿉니다. 드론 위치가 잠시 뒤 조금 움직일 수 있는 이유입니다.`;
+    $("stagenote").textContent = `후보가 수만 곳이라 계산에 몇 초가 걸립니다. 그래서 노드를 옮기고 손을 떼면 먼저 100 m 간격 후보로 빠르게 계산해 보여 주고, 이어서 ${P.grid_m} m 간격 후보 전체`
+      + (P.fine_m ? `, 마지막으로 후보 주변 ${P.fine_m} m 간격` : "") + `을 계산해 결과를 바꿉니다. 드론 위치가 잠시 뒤 조금 움직일 수 있는 이유입니다.`;
   }
   function render() { renderNodes(); renderSegs(); renderPins(); renderResult(); renderTable(); renderMatrix(); renderOptions(); renderStatus(); }
 
@@ -1414,7 +1439,7 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
     if (state.live) doc.without_relay = { topology: state.live.base.label, description: state.live.base.description, rate_bps: state.live.base.rate_bps };
     if (cur) {
       const rp = relayPoint(), ll = lonlat(rp.u, rp.v);
-      doc.relay = { mode: state.relayMode, lat: ll.lat, lon: ll.lon, u: rp.u, v: rp.v, grid_m: state.relayMode === "auto" ? state.relay.step : null,
+      doc.relay = { mode: state.relayMode, lat: ll.lat, lon: ll.lon, u: rp.u, v: rp.v, grid_m: state.relayMode === "auto" ? (state.relay.fine ? state.relay.fine.step : state.relay.step) : null,
                     topology: cur.final.label, description: cur.final.description, rate_bps: cur.final.rate_bps };
     }
     if (!db) {  // outside Claude: save the pick as a JSON file
@@ -1487,7 +1512,7 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
     for (const el of tileEls.values()) el.remove();
     tileEls.clear();
     renderAttrib();
-    $("pxnote").textContent = `BS ${P.heights_m.BS} m, MS ${P.heights_m.MS1} m 안테나(지면 기준). 지도 그림의 한 칸(1픽셀)은 실제 약 ${Math.round(MPP)} m이고, 노드 위치와 지형 높이는 이 칸 단위로 다룹니다. `;
+    $("pxnote").textContent = `BS ${P.heights_m.BS} m, MS ${P.heights_m.MS1} m 안테나(지면 기준). 지도 그림의 한 칸(1픽셀)은 실제 약 ${Math.round(MPP)} m입니다. 지형 높이는 이 칸마다 하나씩(원자료 Copernicus 30 m를 보간) 들어 있고, 노드는 칸 사이 어디든 찍을 수 있습니다. `;
     relayNote();
     if (hiddenRegions.delete(r.id)) {  // a saved pick of a hidden region shows it again
       try { localStorage.setItem("autorelay.hiddenRegions", JSON.stringify([...hiddenRegions])); } catch {}
