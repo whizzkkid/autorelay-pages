@@ -459,8 +459,9 @@
   // The only link cost: the modem's channel-occupancy (airtime) table, as autorelay.topology.AirtimeTable.
   /** Highest table level whose e-SNR threshold is met, -1 below the lowest. */
   function tableLevel(t, esnrDb) { let k = -1; for (let i = 0; i < t.snr_db.length; i++) if (esnrDb >= t.snr_db[i]) k = i; return k; }
-  function tableUL(t, esnrDb) { const k = tableLevel(t, esnrDb); return k >= 0 ? t.airtime[k] : (t.below_lowest === "lowest" ? t.airtime[0] : Infinity); }
-  function tableDL(t, esnrDb) { return t.below_lowest === "lowest" || esnrDb >= t.snr_db[t.dl_index] ? t.airtime[t.dl_index] : Infinity; }
+  // under the lowest threshold a link is unusable (Infinity), as autorelay.topology.AirtimeTable
+  function tableUL(t, esnrDb) { const k = tableLevel(t, esnrDb); return k >= 0 ? t.airtime[k] : Infinity; }
+  function tableDL(t, esnrDb) { return esnrDb >= t.snr_db[t.dl_index] ? t.airtime[t.dl_index] : Infinity; }
   /** Cost model of a parameter set: the airtime table. */
   function costOf(p) { return p.airtime; }
   /** Numerator of rate = scale / (sum of the MS path costs): airtime[DL MCS] x rate[DL MCS]. */

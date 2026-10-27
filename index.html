@@ -323,7 +323,6 @@ details.card.help { padding: 12px 14px; border-top: 1px solid var(--line); }
           <div class="tbl" id="tblbox" hidden>
             <h2>채널 점유시간 표 (MCS 경계)</h2>
             <div class="tablewrap"><table class="airtime" id="airtab" aria-label="채널 점유시간 표"></table></div>
-            <div class="seg" id="bseg"><span class="lab">0 dB 미만</span></div>
             <p class="note" id="tblnote"></p>
           </div>
           <details class="help" id="help-cond">
@@ -383,7 +382,6 @@ details.card.help { padding: 12px 14px; border-top: 1px solid var(--line); }
     showLinks: true,  // every link with its e-SNR on the map
     onWater: null,    // relay (drone) candidates over water (null: the region config's)
     snr: null,        // edited UL MCS thresholds [dB] of the airtime table (null: config)
-    below: null,      // airtime table below the lowest threshold: lowest | unusable (null: config)
     beta: null,       // EESM beta (null: config)
     sens: null,       // receiver sensitivity [dBm] (null: config)
     cab: null,        // cable loss per node [dB] (null: config)
@@ -979,19 +977,10 @@ details.card.help { padding: 12px 14px; border-top: 1px solid var(--line); }
     });
     t.append(tb);
     const lo = A.snr_db[0];
-    const bs = $("bseg"); bs.querySelector(".lab").textContent = `${lo} dB 미만`;
-    bs.querySelectorAll("button").forEach((x) => x.remove());
-    for (const [v, label] of [["lowest", `MCS${A.mcs[0]}로 사용`], ["unusable", "사용 불가"]]) {
-      const b = document.createElement("button"); b.type = "button"; b.id = "bseg-" + v; b.textContent = label;
-      b.setAttribute("aria-pressed", String(A.below_lowest === v));
-      b.addEventListener("click", () => { A.below_lowest = v; state.below = v; state.dirty = true; computeLive(); render(); scheduleRelay(); });
-      bs.append(b);
-    }
     const ul = P.traffic === "uplink", dl = A.airtime[A.dl_index];
     const head = P.traffic === "mean" ? "링크 비용 = 양방향 e-SNR 평균으로 정한 MCS의 점유시간(자기 자신 0, 링크 없음 ∞)." : ul ? "토폴로지는 UL만 고려합니다: 링크 비용 = UL 점유시간(UL e-SNR로 정한 MCS)." :
       `DL은 항상 MCS${A.mcs[A.dl_index]}(점유시간 ${dl}), UL은 e-SNR에 따라 MCS가 바뀝니다. 링크 비용 = DL + UL 점유시간.`;
-    const tail = A.below_lowest === "lowest" ? `${lo} dB 미만 링크도 MCS${A.mcs[0]}(점유시간 ${A.airtime[0]})로 계산합니다(최소 e-SNR 없음).`
-      : `${lo} dB 미만 링크는 쓸 수 없습니다(∞).`;
+    const tail = `${lo} dB 미만 링크는 쓸 수 없습니다(∞).`;
     $("tblnote").textContent = head + " " + tail;
   }
   function radioInput(id, key, stateKey, ok) {
@@ -1099,7 +1088,7 @@ details.card.help { padding: 12px 14px; border-top: 1px solid var(--line); }
       const xm = mean ? (x + y) / 2 : y;
       const ulk = tbl ? E.tableLevel(P.airtime, xm) : 0;
       r.append(nm, cell("td", f1(x), x < 0 ? "bad" : ""), cell("td", f1(y), y < 0 ? "bad" : ""),
-               ...(tbl ? [cell("td", (mean ? f1(xm) + " · " : "") + (ulk >= 0 ? "MCS" + P.airtime.mcs[ulk] : (P.airtime.below_lowest === "lowest" ? "MCS" + P.airtime.mcs[0] + "*" : "불가")), ulk >= 0 ? "" : "bad")] : []),
+               ...(tbl ? [cell("td", (mean ? f1(xm) + " · " : "") + (ulk >= 0 ? "MCS" + P.airtime.mcs[ulk] : "불가"), ulk >= 0 ? "" : "bad")] : []),
                ...(pw ? [cell("td", ulk >= 0 ? f1(Math.max(P.tx_power_min_dbm, state.tx - (xm - P.airtime.snr_db[ulk]))) + " dBm" : "-")] : []),
                cell("td", isFinite(w) ? w.toFixed(2) : "∞", isFinite(w) ? "" : "bad"));
       tb.append(r);
@@ -1276,7 +1265,7 @@ details.card.help { padding: 12px 14px; border-top: 1px solid var(--line); }
     if (state.cab !== null) P.cable_loss_db = Object.assign({}, state.cab);
     if (state.fade !== null) P.fade_margin_db = state.fade;
     if (state.robust !== null) P.robust_radius_m = state.robust;
-    if (P.airtime) { if (state.snr) P.airtime.snr_db = state.snr.slice(); if (state.below) P.airtime.below_lowest = state.below; }
+    if (P.airtime) { if (state.snr) P.airtime.snr_db = state.snr.slice(); }
     model = E.makeModel(TD);
     NODES = [
       { key: "BS", h: P.heights_m.BS, c: "var(--bs)" },
