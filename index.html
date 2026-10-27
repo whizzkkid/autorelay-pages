@@ -1079,20 +1079,24 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
   }
   // Each MS's own rate from the MCS table along its path to the BS: one hop is that MCS's rate; several hops take
   // turns on the one channel, so 1 / (1/r1 + 1/r2 + ...). The topology itself is still chosen by the cost sum.
+  // Each MS's rates along its path to the BS (the path itself is chosen by the airtime cost, i.e. the AH e-SNR).
+  // UL: every hop's MCS comes from that hop's UL e-SNR (child -> parent); hops take turns on the one channel, so
+  // 1 / (1/r1 + 1/r2 + ...). DL: always MCS1 (the radio's fixed DL rate), one frame per hop, so rate / hops.
   function msRates(links, tab) {
-    const parent = {}, A = P.airtime, cost = E.costOf(P), out = {};
+    const parent = {}, A = P.airtime, out = {};
     for (const [p, c] of links) parent[c] = p;
     for (const ms of ["MS1", "MS2"]) {
       out[ms] = null;
       if (parent[ms] === undefined || !A) continue;
       const mcs = [];
-      let inv = 0, c = ms;
+      let inv = 0, hops = 0, dead = false, c = ms;
       for (let k = 0; c !== "BS" && k < 4; k++) {
         const p = parent[c]; if (p === undefined) break;
-        const i = A.airtime.indexOf(E.edgeWeight(tab, p, c, P.traffic, cost)); if (i < 0) break;
-        mcs.unshift(A.mcs[i]); inv += 1 / A.rate_mbps[i]; c = p;
+        const i = E.tableLevel(A, tab[c + ">" + p]);  // UL e-SNR of this hop
+        if (i < 0) dead = true; else { mcs.unshift(A.mcs[i]); inv += 1 / A.rate_mbps[i]; }
+        hops++; c = p;
       }
-      if (c === "BS") out[ms] = { mbps: 1 / inv, mcs };
+      if (c === "BS") out[ms] = { ul: dead ? 0 : 1 / inv, mcs, hops, dl: A.rate_mbps[A.dl_index] / hops, dlMcs: A.mcs[A.dl_index] };
     }
     return out;
   }
@@ -1103,8 +1107,9 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
       who.append(document.createElement("i"), n.key);
       const v = r[n.key], val = document.createElement("span"), det = document.createElement("span");
       if (v) {
-        val.className = "val"; val.textContent = v.mbps.toFixed(3) + " Mb/s";
-        det.className = "det"; det.textContent = v.mcs.map((m) => "MCS" + m).join(" → ") + (v.mcs.length > 1 ? ` (${v.mcs.length}구간)` : "");
+        val.className = "val"; val.textContent = "UL " + (v.ul > 0 ? v.ul.toFixed(3) + " Mb/s" : "불가");
+        det.className = "det"; det.textContent = (v.ul > 0 ? v.mcs.map((m) => "MCS" + m).join(" → ") : "UL e-SNR이 MCS1 하한 미만")
+          + ` · DL ${v.dl.toFixed(3)} Mb/s (MCS${v.dlMcs}${v.hops > 1 ? ` ÷ ${v.hops}구간` : ""})`;
       } else { val.className = "none"; val.textContent = "경로 없음"; }
       const line = document.createElement("div"); line.append(who, val, det); box.append(line);
     }
@@ -1177,8 +1182,8 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
     const head = document.createElement("tr");
     const tbl = !!P.airtime, mean = P.traffic === "mean";
     const pw = tbl && mean && P.tx_power_min_dbm != null;
-    head.append(cell("th", "링크 · 경로"), cell("th", "DL dB"), cell("th", "UL dB"),
-                ...(tbl ? [cell("th", mean ? "평균 · MCS" : "UL MCS")] : []), ...(pw ? [cell("th", "필요 출력")] : []), cell("th", "비용"));
+    head.append(cell("th", "링크 · 경로"), cell("th", "DL dB"), cell("th", tbl ? "UL dB · UL MCS" : "UL dB"),
+                ...(tbl && mean ? [cell("th", "평균(AH) · 비용 MCS")] : []), ...(pw ? [cell("th", "필요 출력")] : []), cell("th", "비용"));
     const thead = document.createElement("thead"); thead.append(head); t.append(thead);
     const tb = document.createElement("tbody");
     for (const [a0, b0] of PAIRS) {
@@ -1191,15 +1196,17 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
       nm.append(cell("span", linkState(info[a + ">" + b]), "st"));
       const w = E.edgeWeight(tab, a, b, P.traffic, E.costOf(P));
       const xm = mean ? (x + y) / 2 : y;
-      const ulk = tbl ? E.tableLevel(P.airtime, xm) : 0;
-      r.append(nm, cell("td", f1(x), x < 0 ? "bad" : ""), cell("td", f1(y), y < 0 ? "bad" : ""),
-               ...(tbl ? [cell("td", (mean ? f1(xm) + " · " : "") + (ulk >= 0 ? "MCS" + P.airtime.mcs[ulk] : "불가"), ulk >= 0 ? "" : "bad")] : []),
+      const ulk = tbl ? E.tableLevel(P.airtime, xm) : 0;  // cost level (AH e-SNR)
+      const uk = tbl ? E.tableLevel(P.airtime, y) : -1;  // UL MCS from the UL e-SNR
+      r.append(nm, cell("td", f1(x), x < 0 ? "bad" : ""),
+               cell("td", f1(y) + (tbl ? " · " + (uk >= 0 ? "MCS" + P.airtime.mcs[uk] : "불가") : ""), y < 0 ? "bad" : ""),
+               ...(tbl && mean ? [cell("td", f1(xm) + " · " + (ulk >= 0 ? "MCS" + P.airtime.mcs[ulk] : "불가"), ulk >= 0 ? "" : "bad")] : []),
                ...(pw ? [cell("td", ulk >= 0 ? f1(Math.max(P.tx_power_min_dbm, state.tx - (xm - P.airtime.snr_db[ulk]))) + " dBm" : "-")] : []),
                cell("td", isFinite(w) ? w.toFixed(2) : "∞", isFinite(w) ? "" : "bad"));
       tb.append(r);
     }
     t.append(tb);
-    $("tabnote").textContent = "DL은 BS 쪽 노드가 보내는 방향(사용 중인 링크는 화살표 방향), UL은 그 반대 방향의 e-SNR입니다. 쓰지 않는 링크는 BS까지 홉 수가 적은 노드가 보내는 쪽을 DL로 봅니다." +
+    $("tabnote").textContent = "DL은 BS 쪽 노드가 보내는 방향(사용 중인 링크는 화살표 방향), UL은 그 반대 방향의 e-SNR입니다. 쓰지 않는 링크는 BS까지 홉 수가 적은 노드가 보내는 쪽을 DL로 봅니다. UL MCS는 UL e-SNR로, 비용은 무전기가 AH 구간(MCS1)에서 재는 e-SNR에 해당하는 평균값으로 정합니다. DL은 항상 MCS1입니다." +
       (pw ? ` 필요 출력: 자동 송신출력(AGC)이 같은 MCS를 유지하면서 낮출 수 있는 출력(${state.tx} dBm에서 시작, 하한 ${P.tx_power_min_dbm} dBm).` : "");
   }
   function renderMatrix() {
@@ -1248,7 +1255,7 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
     if (!state.live) return;
     const td = (txt, cls) => { const c = document.createElement("td"); if (cls) c.className = cls; c.textContent = txt; return c; };
     const head = document.createElement("tr");
-    head.append(...["토폴로지", "경로 (링크 e-SNR, dB)", "비용", "MS1 / MS2 Mb/s"].map((x) => { const th = document.createElement("th"); th.textContent = x; return th; }));
+    head.append(...["토폴로지", "경로 (링크 e-SNR, dB)", "비용", "UL Mb/s (MS1 / MS2)"].map((x) => { const th = document.createElement("th"); th.textContent = x; return th; }));
     const thead = document.createElement("thead"); thead.append(head); t.append(thead);
     const tb = document.createElement("tbody");
     const section = (title, dec, list, tab) => {
@@ -1260,7 +1267,7 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
         const c1 = td(a.label);
         if (a.description === dec.description) { const b = document.createElement("span"); b.className = "pick"; b.textContent = "선택"; c1.append(b); }
         r.append(c1, td(a.links.map(([pp, cc]) => `${pp}→${cc} ${f1(tab[pp + ">" + cc])}`).join(", "), "path"),
-                 td(isFinite(a.total_cost) ? a.total_cost.toFixed(2) : "∞", "r"), td((({ MS1, MS2 }) => [MS1, MS2].map((x) => (x ? x.mbps.toFixed(2) : "-")).join(" / "))(msRates(a.links, tab)), "r"));
+                 td(isFinite(a.total_cost) ? a.total_cost.toFixed(2) : "∞", "r"), td((({ MS1, MS2 }) => [MS1, MS2].map((x) => (x ? (x.ul > 0 ? x.ul.toFixed(2) : "불가") : "-")).join(" / "))(msRates(a.links, tab)), "r"));
         const toggle = () => { state.preview = state.preview === a.description ? null : a.description; renderOptions(); renderTable(); renderMatrix(); drawLinks(); };
         r.addEventListener("click", toggle);
         r.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } });
