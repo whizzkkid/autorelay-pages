@@ -669,34 +669,29 @@
     });
     return { x: Float64Array.from(x), y: Float64Array.from(y), win: Int32Array.from(win), step, nwin: centers.length };
   }
-  /** TerrainPlanner.refine: the first point of every window in ranking order (windows ordered the same way). */
+  /** TerrainPlanner.refine: the best fine points in ranking order, as many as there were windows (the windows of
+   * neighbouring candidates overlap, so a point is not tied to one window). picks[0] is the drone spot. */
   function refinePick(fg, score, margin) {
     const idx = Array.from({ length: score.length }, (_, i) => i);
     const mg = (i) => (margin ? margin[i] : 0), nr = (i) => Math.floor(score[i] / BIG);
     const cmp = (x, y) => (x > y ? -1 : x < y ? 1 : 0);
-    idx.sort((a, b) => cmp(nr(a), nr(b)) || cmp(score[a], score[b]) || cmp(mg(a), mg(b)) || (a - b));
-    const first = new Set(), out = [];
-    for (const i of idx) if (!first.has(fg.win[i])) { first.add(fg.win[i]); out.push(i); }
-    return out;
+    idx.sort((a, b) => cmp(nr(a), nr(b)) || cmp(score[a], score[b]) || cmp(mg(a), mg(b)));  // stable: full ties keep lattice order
+    return idx.slice(0, fg.nwin);
   }
 
   /** Ranking score of TerrainPlanner.run: MSs connected first, then rate (BIG exceeds any rate). */
   const BIG = 1e10;
   function relayScore(g) { const s = new Float64Array(g.rate.length); for (let i = 0; i < s.length; i++) s[i] = g.reach[i] * BIG + g.rate[i]; return s; }
-  /** Candidate order of TerrainPlanner.rank / pick, at least 5 grid steps apart; the drone stands exactly at the point. */
+  /** TerrainPlanner.rank / pick: the topK best cells, neighbours allowed (no spacing rule); the drone stands exactly at the point. */
   function pickCandidates(grid, score, topK, margin) {
     const idx = Array.from({ length: score.length }, (_, i) => i);
     const mg = (i) => (margin ? margin[i] : 0), nr = (i) => Math.floor(score[i] / BIG);
     const cmp = (x, y) => (x > y ? -1 : x < y ? 1 : 0);  // descending, safe with +-Infinity
     // MSs connected first, then the score (rate = scale / Dijkstra cost sum, so the lowest cost), then the weakest
-    // relay link (ties are common)
-    idx.sort((a, b) => cmp(nr(a), nr(b)) || cmp(score[a], score[b]) || cmp(mg(a), mg(b)) || (a - b));
-    const out = [];
-    for (const i of idx) {
-      if (out.every((j) => Math.hypot(grid.x[i] - grid.x[j], grid.y[i] - grid.y[j]) >= 5 * grid.step)) out.push(i);
-      if (out.length >= topK) break;
-    }
-    return out;
+    // relay link (ties are common). The sort is stable, so cells that tie on all three keep grid order; that only happens
+    // when no cell gains from the drone (every margin -inf), and then no drone is shown.
+    idx.sort((a, b) => cmp(nr(a), nr(b)) || cmp(score[a], score[b]) || cmp(mg(a), mg(b)));
+    return idx.slice(0, topK);
   }
 
   // ---------------------------------------------------------------- whole plan (TerrainPlanner.run)

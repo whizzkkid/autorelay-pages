@@ -105,6 +105,12 @@ select, .field input[type="search"] {
 }
 .pin.relay i { border-radius: 3px; transform: rotate(45deg); }
 .pin.auto { pointer-events: none; }
+.pvchip { position: absolute; left: 8px; top: 8px; z-index: 5; display: flex; align-items: center; gap: 8px; max-width: calc(100% - 16px);
+  font: 500 .78rem/1.3 var(--font-body); color: var(--accent-ink); background: var(--accent); border-radius: 4px; padding: 4px 4px 4px 10px;
+  box-shadow: 0 0 0 1px rgba(0,0,0,.45), 0 1px 4px rgba(0,0,0,.3); cursor: default; }
+.pvchip span { min-width: 0; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.pvchip button { flex: none; min-height: 28px; font: inherit; font-weight: 600; color: var(--accent); background: var(--accent-ink); border: 0; border-radius: 3px; padding: 4px 10px; cursor: pointer; }
+.pvchip button:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px; }
 .readout { font: 12px/1.4 var(--font-mono); color: var(--muted); font-variant-numeric: tabular-nums; min-height: 1.4em; }
 .legend { display: flex; align-items: center; gap: 8px; font-size: .78rem; color: var(--muted); flex-wrap: wrap; }
 .legend .bar { width: 120px; height: 8px; border-radius: 2px; background: linear-gradient(90deg, #2b1a4e, #6a2c8a, #c0477a, #f08a4b, #f9e07a); }
@@ -316,6 +322,7 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
           <canvas id="heat" width="1" height="1"></canvas>
           <svg id="links" viewBox="0 0 1000 1000" aria-hidden="true"></svg>
         </div>
+        <div class="pvchip" id="pvchip" hidden><span id="pvtext" role="status"></span><button type="button" id="pvoff">원래대로</button></div>
       </div>
       <div class="mapfoot">
         <div class="legend" id="legend" hidden><span>드론을 두면 나아지는 곳</span><span id="lgmin">덜</span><span class="bar"></span><span id="lgmax">더</span></div>
@@ -686,6 +693,7 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
     return { heights: Object.assign({}, P.heights_m, { R: state.hR }), tx };
   }
   function computeLive() {
+    state.preview = null;  // a compared tree is a momentary look: new positions or conditions show the real plan again
     if (!allPlaced()) { state.live = null; state.manual = null; return; }
     const nm = nodesM(), s = settings();
     const { tab, info } = E.nodeTable(model, nm, s);
@@ -729,9 +737,13 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
   const inlineGrids = {};
   function runInline() {
     const j = queue.shift(); if (!j) return;
-    const key = j.step + "/" + j.border + "/" + j.onWater;
-    const grid = inlineGrids[key] || (inlineGrids[key] = E.candidateGrid(model, j.step, j.border, j.onWater));
-    const r = E.relayLinks(model, j.node, j.hNode, j.txNode, grid, j.i0, j.i1, j.hR, j.txR, j.cab);
+    let grid, i0 = j.i0, i1 = j.i1;
+    if (j.pts) { grid = j.pts; i0 = 0; i1 = j.pts.x.length; }  // fine stage: the points travel with the job (worker.js does the same)
+    else {
+      const key = j.step + "/" + j.border + "/" + j.onWater;
+      grid = inlineGrids[key] || (inlineGrids[key] = E.candidateGrid(model, j.step, j.border, j.onWater));
+    }
+    const r = E.relayLinks(model, j.node, j.hNode, j.txNode, grid, i0, i1, j.hR, j.txR, j.cab);
     onResult({ gen: j.gen, name: j.name, i0: j.i0, to: r.to, from: r.from });
     if (queue.length) setTimeout(runInline, 0);
   }
@@ -808,7 +820,7 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
     } else {
       const cands = E.pickCandidates(c.grid, E.relayScore(g), P.top_k, g.margin), b = cands[0];
       xy = [c.grid.x[b], c.grid.y[b]];
-      state.relay = { gen: c.gen, step: c.step, grid: c.grid, rate: g.rate, usesRelay: g.usesRelay, cands, xy, fine: null };
+      state.relay = { gen: c.gen, step: c.step, grid: c.grid, rate: g.rate, usesRelay: g.usesRelay, reach: g.reach, cands, xy, fine: null };
       done = `계산 완료 (${c.step} m 격자, 후보 ${c.grid.x.length.toLocaleString("ko-KR")}곳)`;
     }
     const info = {}, ft = E.finalTable(model, tab, c.nm, c.s, xy, info);
@@ -910,8 +922,11 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
     cv.style.top = ((H - (y0 + ny * step) / MPP) / H * 100) + "%";
     cv.style.height = (ny * step / MPP / H * 100) + "%";
     const cx = cv.getContext("2d"), img = cx.createImageData(nx, ny);
-    let lo = Infinity, hi = -Infinity;
-    const helps = (q) => r.rate[q] > 0 && r.usesRelay[q];  // colour only where routing through the drone wins
+    let lo = Infinity, hi = -Infinity, top = 0;
+    // colour only where routing through the drone wins, and only among the cells that connect the most MSs: the ranking
+    // puts MSs connected first, so a cell that leaves an MS cut off is never brighter than one that connects it
+    for (let q = 0; q < r.rate.length; q++) if (r.rate[q] > 0 && r.usesRelay[q] && r.reach[q] > top) top = r.reach[q];
+    const helps = (q) => r.rate[q] > 0 && r.usesRelay[q] && r.reach[q] === top;
     for (let q = 0; q < r.rate.length; q++) { if (!helps(q)) continue; const l = Math.log10(r.rate[q]); if (l < lo) lo = l; if (l > hi) hi = l; }
     const stops = [[43, 26, 78], [106, 44, 138], [192, 71, 122], [240, 138, 75], [249, 224, 122]];
     for (let q = 0; q < r.rate.length; q++) {
@@ -923,7 +938,7 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
       img.data[o + 3] = 255;
     }
     cx.putImageData(img, 0, 0);
-    $("lgmin").textContent = "덜"; $("lgmax").textContent = "더";  // colour = cost sum of the two MS paths (lower is better)
+    $("lgmin").textContent = "덜"; $("lgmax").textContent = "더";  // colour = Dijkstra cost sum of the connected MSs (lower is brighter)
   }
   function relayPoint() {
     if (state.relayMode === "manual" && state.relayManual) return state.relayManual;
@@ -946,8 +961,9 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
     const cur = shownRelay();
     let topo = cur ? cur.final : state.live && state.live.base;
     if (topo && state.preview) {
-      const pool = [...(state.live ? state.live.base.alternatives : []), ...(cur ? cur.final.alternatives : [])];
-      topo = pool.find((a) => a.description === state.preview) || topo;
+      const pool = [...(state.live ? state.live.base.alternatives : []), ...(cur ? cur.final.alternatives.slice(0, 5) : [])];
+      const pv = pool.find((a) => a.description === state.preview);
+      if (pv) topo = pv; else { state.preview = null; $("pvchip").hidden = true; }
     }
     const tab = cur ? cur.final_table : state.live && state.live.tab;
     const info = Object.assign({}, state.live ? state.live.info : {}, cur && cur.info ? cur.info : {});
@@ -1395,7 +1411,7 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
         const c2 = td(fcost(a.total_cost), "r"), rates = document.createElement("small"); rates.className = "sub";
         rates.textContent = (({ MS1, MS2 }) => [MS1, MS2].map((x) => (x ? (x.ul > 0 ? x.ul.toFixed(2) : "불가") : "-")).join(" / "))(msRates(a.links, tab));
         c2.append(rates); r.append(c1, c2);
-        const toggle = () => { state.preview = state.preview === a.description ? null : a.description; renderOptions(); renderTable(); renderMatrix(); drawLinks(); };
+        const toggle = () => { state.preview = state.preview === a.description ? null : a.description; renderOptions(); renderTable(); renderMatrix(); drawLinks(); renderPreviewChip(); };
         r.addEventListener("click", toggle);
         r.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } });
         tb.append(r);
@@ -1408,7 +1424,16 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
                      cur.final, cur.final.alternatives.slice(0, 5), cur.final_table);
     t.append(tb);
   }
-  function render() { renderNodes(); renderSegs(); renderPins(); renderResult(); renderTable(); renderMatrix(); renderOptions(); renderStatus(); }
+  function renderPreviewChip() {  // the map shows a compared tree instead of the plan: say so, with a way back
+    const v = shown(), t = state.preview ? v.topo : null;  // shown() first: it ends a preview that is no longer listed
+    const cur = shownRelay(), plan = cur ? cur.final : state.live && state.live.base;
+    const differs = t && !(plan && plan.description === t.description);  // the 선택 row itself needs no warning
+    $("pvchip").hidden = !differs;
+    if (differs) $("pvtext").textContent = `비교 중: ${t.label} · 결과 카드의 계획과 다릅니다`;
+  }
+  ["pointerdown", "click"].forEach((ev) => $("pvchip").addEventListener(ev, (e) => e.stopPropagation()));  // not a map tap (the wheel still zooms)
+  $("pvoff").addEventListener("click", () => { state.preview = null; render(); $("tab-opts").focus(); });
+  function render() { renderNodes(); renderSegs(); renderPins(); renderResult(); renderTable(); renderMatrix(); renderOptions(); renderStatus(); renderPreviewChip(); }
 
   function setUseRelay(on) {
     state.useRelay = on; $("relbtn").setAttribute("aria-pressed", String(on)); $("heatbtn").disabled = !on;
@@ -1436,10 +1461,12 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
     const cur = current(), doc = { nodes, tx_power_dbm: state.tx, relay_height_m: state.hR, eesm_beta: P.eesm_beta, rx_sensitivity_dbm: P.rx_sensitivity_dbm,
                                  cable_loss_db: P.cable_loss_db, fade_margin_db: P.fade_margin_db || 0, saved_at: new Date().toISOString() };
     if (state.live) doc.without_relay = { topology: state.live.base.label, description: state.live.base.description, rate_bps: state.live.base.rate_bps };
-    if (cur) {
+    if (cur && state.relayMode === "auto" && !cur.final.usesRelay) {  // no spot gains from the drone: no position to record
+      doc.relay = { mode: "auto", used: false, topology: cur.final.label, description: cur.final.description, rate_bps: cur.final.rate_bps };
+    } else if (cur) {
       const rp = relayPoint(), ll = lonlat(rp.u, rp.v);
       doc.relay = { mode: state.relayMode, lat: ll.lat, lon: ll.lon, u: rp.u, v: rp.v, grid_m: state.relayMode === "auto" ? (state.relay.fine ? state.relay.fine.step : state.relay.step) : null,
-                    topology: cur.final.label, description: cur.final.description, rate_bps: cur.final.rate_bps };
+                    used: !!cur.final.usesRelay, topology: cur.final.label, description: cur.final.description, rate_bps: cur.final.rate_bps };
     }
     if (!db) {  // outside Claude: save the pick as a JSON file
       doc.region = REGION.id;
