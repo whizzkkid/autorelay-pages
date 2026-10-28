@@ -13,6 +13,15 @@
   const C0 = 299792458.0;
   const R_EARTH = 6371000.0;
   const MAXR = 5;
+  // continuous ray model (autorelay/terrain.py)
+  const FADE_X1 = Math.PI;    // k * dL [rad] at which a specular point reaches full weight (barrier lambda / 2)
+  const WRAY_J0 = 0.0;        // delta-Bullington loss [dB] up to which the ray model has full weight ...
+  const WRAY_J1 = 3.0;        // ... and from which the diffraction model alone is used
+  const LEG_VSHIFT = 0.78062; // leg loss J(v_max - LEG_VSHIFT): a clear leg gives exactly 0 dB
+  const CAP_BETA = 0.5;       // soft cap: a kept ray has full weight at a >= (1 + CAP_BETA) a_{K+1}
+  const TIE_REL = 1.0;        // persistence tie band
+  const SIN_EPS = 1e-4;       // grazing fade
+  const END_EPS = 1e-6;       // [m] an outermost sample pair closer than this to the terminals is dropped
   const NODE_NAMES = ["BS", "MS1", "MS2"];
   const MS_NODES = ["MS1", "MS2"];
   const RELAY = "R";
@@ -54,16 +63,21 @@
     const water = new Uint8Array(W * H);
     for (let i = 0; i < W * H; i++) water[i] = (wb[i >> 3] >> (7 - (i & 7))) & 1;
     const p = data.params;
-    const maxN = Math.ceil(Math.hypot(W, H) * data.mpp / p.step_m) + 4;
+    const maxN = Math.ceil(Math.hypot(W, H) * data.mpp / p.step_m) + 4;  // N <= D / step + 2
+    const mr = 2 * maxN + 2, F64 = (n) => new Float64Array(n);
     return {
       W, H, T, G, water, mpp: data.mpp, p,
       lam: C0 / p.fc_hz, ae: p.k_factor * R_EARTH, smooth_n: Math.max(Math.round(p.smooth_m / p.step_m / 2), 1),
       buf: {
-        d: new Float64Array(maxN), z: new Float64Array(maxN), zraw: new Float64Array(maxN),
-        zs: new Float64Array(maxN), zse: new Float64Array(maxN), wat: new Uint8Array(maxN),
-        hr: new Float64Array(p.n_sub), hi: new Float64Array(p.n_sub), s: new Float64Array(p.n_sub),
-        out: { n: 0, L: new Float64Array(MAXR), cr: new Float64Array(MAXR), ci: new Float64Array(MAXR),
-               et: new Float64Array(MAXR), er: new Float64Array(MAXR), px: new Float64Array(MAXR), los: false, diff_db: 0 },
+        d: F64(maxN), z: F64(maxN), zraw: F64(maxN), zs: F64(maxN), zse: F64(maxN),
+        wv: F64(maxN), pres: F64(maxN), ms: F64(maxN), F: F64(maxN),
+        Ux: F64(maxN), Uz: F64(maxN), f: F64(maxN), Lk: F64(maxN),
+        r_x: F64(mr), r_y: F64(mr), r_L: F64(mr), r_s: F64(mr), r_t: new Int8Array(mr),
+        ev: F64(6 * maxN + 8), ety: new Int8Array(6 * maxN + 8),
+        c_a: F64(mr), c_cr: F64(mr), c_ci: F64(mr), c_r: new Int32Array(mr), used: new Uint8Array(mr),
+        t_a: F64(MAXR + 1), t_cr: F64(MAXR + 1), t_ci: F64(MAXR + 1), t_r: new Int32Array(MAXR + 1),
+        hr: F64(p.n_sub), hi: F64(p.n_sub), s: F64(p.n_sub),
+        out: { n: 0, L: F64(MAXR), cr: F64(MAXR), ci: F64(MAXR), et: F64(MAXR), er: F64(MAXR), los: false, diff_db: 0 },
       },
     };
   }
@@ -77,13 +91,33 @@
     return R[i] * (1 - fr) * (1 - fc) + R[i + 1] * (1 - fr) * fc + R[i + W] * fr * (1 - fc) + R[i + W + 1] * fr * fc;
   }
 
+  /** Bilinear DSM height (returned) and bilinear water fraction (TW.wv) at one point, shared weights. */
+  const TW = { wv: 0 };
+  function bilinearTW(R, Wm, W, H, row, col) {
+    const r0 = Math.min(Math.max(Math.floor(row), 0), H - 2);
+    const c0 = Math.min(Math.max(Math.floor(col), 0), W - 2);
+    const fr = Math.min(Math.max(row - r0, 0), 1);
+    const fc = Math.min(Math.max(col - c0, 0), 1);
+    const w00 = (1 - fr) * (1 - fc), w01 = (1 - fr) * fc, w10 = fr * (1 - fc), w11 = fr * fc;
+    const i = r0 * W + c0;
+    let wv = 0.0;
+    if (Wm[i]) wv += w00;
+    if (Wm[i + 1]) wv += w01;
+    if (Wm[i + W]) wv += w10;
+    if (Wm[i + W + 1]) wv += w11;
+    TW.wv = wv;
+    return R[i] * w00 + R[i + 1] * w01 + R[i + W] * w10 + R[i + W + 1] * w11;
+  }
+
   function groundAt(m, x, y) {
     return bilinear(m.G, m.W, m.H, m.H - y / m.mpp - 0.5, x / m.mpp - 0.5);
   }
 
+  /** Knife-edge loss J(v) [dB], exactly continuous (the formula crosses 0 at v = -0.7806194). */
   function J(v) {
-    if (v <= -0.78) return 0.0;
-    return 6.9 + 20.0 * Math.log10(Math.sqrt((v - 0.1) * (v - 0.1) + 1.0) + v - 0.1);
+    if (v <= -0.79) return 0.0;
+    const x = v - 0.1;
+    return Math.max(6.9 + 20.0 * Math.log10(Math.sqrt(x * x + 1.0) + x), 0.0);
   }
 
   function maxV(z, d, i0, i1, za, zb, lam) {
@@ -117,106 +151,352 @@
     return [(nr * dr + ni * di) / den, (ni * dr - nr * di) / den];
   }
 
-  function clear(z, d, i0, i1, xa, za, xb, zb, skipLo, skipHi) {
-    if (xb === xa) return true;
-    const lo = Math.min(xa, xb), hi = Math.max(xa, xb);
-    for (let i = i0 + 1; i < i1; i++) {
-      if (skipLo <= i && i <= skipHi) continue;
-      const x = d[i];
-      if (x <= lo || x >= hi) continue;
-      const zl = za + (zb - za) * (x - xa) / (xb - xa);
-      if (z[i] > zl + 1e-3) return false;
+  // ---------------------------------------------------------------- continuous ray model (autorelay/terrain.py)
+  /** Index i in [1, N] of the profile interval [d[i-1], d[i]] that contains x (interior spacing s). */
+  function seg(d, N, s, x) {
+    if (x <= d[1]) return 1;
+    if (x >= d[N - 1]) return N;
+    let j = 1 + Math.floor((x - d[1]) / s);
+    if (j > N - 2) j = N - 2;
+    if (j < 1) j = 1;
+    return j + 1;
+  }
+
+  /** Box filter of half-width a of the piecewise-linear profile, point-symmetric continuation: heights zs, slopes ms. */
+  function smoothProfile(z, d, N, a, F, zs, ms) {
+    const D = d[N];
+    F[0] = 0.0;
+    for (let i = 1; i <= N; i++) F[i] = F[i - 1] + 0.5 * (d[i] - d[i - 1]) * (z[i] + z[i - 1]);
+    let jp = 1, jm = 1, ep = N, em = N;
+    for (let i = 0; i <= N; i++) {
+      let x = d[i] + a, j, u;
+      if (x <= D) {
+        while (jp < N && d[jp] < x) jp++;
+        j = jp;
+        u = x;
+      } else {
+        u = 2.0 * D - x;
+        while (ep > 1 && d[ep - 1] > u) ep--;
+        j = ep;
+      }
+      let zq = z[j - 1] + (z[j] - z[j - 1]) * (u - d[j - 1]) / (d[j] - d[j - 1]);
+      let Fq = F[j - 1] + (u - d[j - 1]) * 0.5 * (z[j - 1] + zq);
+      let zp, Fp;
+      if (x <= D) {
+        zp = zq;
+        Fp = Fq;
+      } else {
+        zp = 2.0 * z[N] - zq;
+        Fp = Fq + 2.0 * z[N] * (x - D);
+      }
+      x = d[i] - a;
+      if (x >= 0.0) {
+        while (jm < N && d[jm] < x) jm++;
+        j = jm;
+        u = x;
+      } else {
+        u = -x;
+        while (em > 1 && d[em - 1] > u) em--;
+        j = em;
+      }
+      zq = z[j - 1] + (z[j] - z[j - 1]) * (u - d[j - 1]) / (d[j] - d[j - 1]);
+      Fq = F[j - 1] + (u - d[j - 1]) * 0.5 * (z[j - 1] + zq);
+      let zm, Fm;
+      if (x >= 0.0) {
+        zm = zq;
+        Fm = Fq;
+      } else {
+        zm = 2.0 * z[0] - zq;
+        Fm = Fq + 2.0 * z[0] * x;
+      }
+      zs[i] = (Fp - Fm) / (2.0 * a);
+      ms[i] = (zp - zm) / (2.0 * a);
     }
-    return true;
   }
 
-  const FS = { px: 0, pz: 0, sin: 0, mis: 0 };
-  function facetSpecular(zs, d, j, xa, za, xb, zb) {
-    const x1 = d[j], y1 = zs[j], x2 = d[j + 1], y2 = zs[j + 1];
-    let tx = x2 - x1, ty = y2 - y1;
-    const tl = Math.sqrt(tx * tx + ty * ty);
-    tx /= tl; ty /= tl;
-    const nx = -ty, ny = tx;
-    const sa = (xa - x1) * nx + (za - y1) * ny;
-    const sb = (xb - x1) * nx + (zb - y1) * ny;
-    if (sa <= 0 || sb <= 0) return false;
-    const ix = xa - 2 * sa * nx, iz = za - 2 * sa * ny;
-    const dx = xb - ix, dz = zb - iz;
-    const den = dx * ty - dz * tx;
-    if (Math.abs(den) < 1e-15) return false;
-    const s = ((x1 - ix) * ty - (y1 - iz) * tx) / den;
-    if (s <= 0 || s >= 1) return false;
-    const px = ix + s * dx, pz = iz + s * dz;
-    const L1 = Math.sqrt((px - xa) * (px - xa) + (pz - za) * (pz - za));
-    FS.px = px; FS.pz = pz; FS.sin = sa / L1; FS.mis = px - 0.5 * (x1 + x2);
-    return true;
+  /** 0 for x <= 0, 1 for x >= FADE_X1, sin^2 ramp in between. */
+  function fade(x) {
+    if (x <= 0.0) return 0.0;
+    if (x >= FADE_X1) return 1.0;
+    const q = Math.sin(0.5 * Math.PI * x / FADE_X1);
+    return q * q;
   }
 
-  /** Specular reflections; writes rays at index off.. of out, returns the number found. */
-  function reflections(m, z, zs, d, wat, i0, i1, xa, za, xb, zb, win, out, off, maxn) {
-    const p = m.p, lam = m.lam, ae = m.ae;
-    let n = 0, prevOk = false, prevM = 0.0;
-    for (let j = i0 + 1; j < i1 - 1; j++) {
-      if (!facetSpecular(zs, d, j, xa, za, xb, zb)) { prevOk = false; continue; }
-      let px = FS.px, pz = FS.pz, sinPsi = FS.sin;
-      const mis = FS.mis;
-      const fl = d[j + 1] - d[j];
-      let hit = Math.abs(mis) <= 0.5 * fl;
-      if (!hit && prevOk && (prevM > 0) !== (mis > 0)) {
-        hit = true;
-        px = d[j]; pz = zs[j];
-        const L1 = Math.sqrt((px - xa) * (px - xa) + (pz - za) * (pz - za));
-        const sl = (zs[j + 1] - zs[j - 1]) / (d[j + 1] - d[j - 1]);
-        const cn = 1.0 / Math.sqrt(1 + sl * sl);
-        sinPsi = ((xa - px) * (-sl * cn) + (za - pz) * cn) / L1;
-      }
-      prevOk = true;
-      prevM = mis;
-      if (!hit || sinPsi <= 0) continue;
-      let dup = false;
-      for (let q = 0; q < Math.min(n, maxn); q++) if (Math.abs(out.px[off + q] - px) < 3.0 * fl) dup = true;
-      if (dup) continue;
-      if (!clear(z, d, i0, i1, xa, za, px, pz, j - win, j + 1 + win)) continue;
-      if (!clear(z, d, i0, i1, px, pz, xb, zb, j - win, j + 1 + win)) continue;
-      const L1 = Math.sqrt((px - xa) * (px - xa) + (pz - za) * (pz - za));
-      const L2 = Math.sqrt((xb - px) * (xb - px) + (zb - pz) * (zb - pz));
-      let g, sig;
-      if (wat[j]) {
-        g = gammaTM(sinPsi, p.ew_r, p.ew_i);
-        sig = p.water_roughness_m;
+  /** Weight of the ray model vs. the diffraction model: smoothstep 1 -> 0 over [WRAY_J0, WRAY_J1]. */
+  function wray(jdb) {
+    if (jdb <= WRAY_J0) return 1.0;
+    if (jdb >= WRAY_J1) return 0.0;
+    const u = (jdb - WRAY_J0) / (WRAY_J1 - WRAY_J0);
+    return 1.0 - u * u * (3.0 - 2.0 * u);
+  }
+
+  /** The root in [0, 1] of a2 t^2 + b1 t + c0 when the values at t = 0 and t = 1 differ in sign. */
+  function rootOdd(a2, b1, c0) {
+    let t;
+    if (a2 === 0.0) {
+      t = -c0 / b1;
+    } else {
+      let disc = b1 * b1 - 4.0 * a2 * c0;
+      if (disc < 0.0) disc = 0.0;
+      const sq = Math.sqrt(disc);
+      const q = b1 >= 0.0 ? -0.5 * (b1 + sq) : -0.5 * (b1 - sq);
+      if (q === 0.0) {
+        t = 0.0;
       } else {
-        g = gammaTM(sinPsi, p.eg_r, p.eg_i);
-        let acc = 0.0, cnt = 0;
-        for (let k = Math.max(j - win, 0); k < Math.min(j + win + 1, z.length); k++) {
-          acc += (z[k] - zs[k]) * (z[k] - zs[k]);
-          cnt++;
-        }
-        sig = Math.sqrt(acc / Math.max(cnt, 1));
+        const t1 = q / a2, t2 = c0 / q;
+        const e1 = Math.max(-t1, t1 - 1.0, 0.0), e2 = Math.max(-t2, t2 - 1.0, 0.0);
+        t = e1 < e2 ? t1 : t2;
       }
-      const t = 2 * Math.PI * sig * sinPsi / lam;
-      const rho = Math.exp(-2.0 * t * t);
-      const dd1 = px - xa, dd2 = xb - px;
-      const tpsi = Math.max(sinPsi / Math.sqrt(Math.max(1 - sinPsi * sinPsi, 1e-12)), 1e-9);
+    }
+    return Math.min(Math.max(t, 0.0), 1.0);
+  }
+
+  /** Largest Fresnel parameter (floor 0) of the raw profile above the leg (xt, zt) -> (px, pz); samples within r0 of
+   * the reflection point are ignored and ramped in linearly up to r1. */
+  function legVmax(z, d, N, s, xt, zt, px, pz, lam, r0, r1) {
+    const lo = Math.min(xt, px), hi = Math.max(xt, px), Lh = hi - lo;
+    let best = 0.0;
+    if (Lh <= 0.0) return best;
+    const iLo = seg(d, N, s, lo), iHi = seg(d, N, s, hi) - 1;
+    const sl = (pz - zt) / (px - xt);
+    for (let i = iLo; i <= iHi; i++) {
+      const x = d[i];
+      const h = z[i] - (zt + sl * (x - xt));
+      if (h <= 0.0) continue;
+      if (x <= lo || x >= hi) continue;
+      const r = Math.abs(px - x);
+      if (r <= r0) continue;
+      let v = h * Math.sqrt(2.0 * Lh / (lam * Math.abs(x - xt) * r));
+      if (r < r1) {
+        const g = (r - r0) / (r1 - r0);
+        v = g * v;
+      }
+      if (v > best) best = v;
+    }
+    return best;
+  }
+
+  /** Fold / end weight of root q: fade(k * persistence) of its path-length extremum (elder rule with a soft tie). */
+  function persistenceWeight(ev, ety, ne, nr, q, kw) {
+    const p = nr + 1 + q;
+    const sg = ety[p] > 0 ? 1.0 : -1.0;
+    const vi = sg * ev[p];
+    let w = 1.0;
+    for (let dirn = -1; dirn <= 1; dirn += 2) {
+      let M = -1e300, rem = 1.0, acc = 0.0;
+      for (let j = p + dirn; j >= 0 && j < ne; j += dirn) {
+        if (ety[j] === ety[p]) {
+          const dv = vi - sg * ev[j];  // lead of the candidate
+          const bar = M - vi;          // barrier between the root and the candidate
+          let qk;
+          if (dv <= 0.0) qk = 0.0;
+          else if (bar <= 0.0) qk = 1.0;
+          else {
+            const u = dv / (TIE_REL * bar);
+            if (u <= 0.0) qk = 0.0;
+            else if (u >= 1.0) qk = 1.0;
+            else {
+              const sq = Math.sin(0.5 * Math.PI * u);
+              qk = sq * sq;
+            }
+          }
+          if (qk > 0.0) {
+            acc += rem * qk * fade(kw * Math.max(bar, 0.0));
+            rem *= 1.0 - qk;
+            if (rem <= 0.0) break;
+          }
+        } else if (sg * ev[j] > M) {
+          M = sg * ev[j];
+        }
+      }
+      if (rem > 0.0) acc += rem * fade(kw * Math.max(M - vi, 0.0));
+      if (acc < w) w = acc;
+    }
+    return w;
+  }
+
+  /** Specular reflections A = (0, za) -> B = (D, zb) on the C1 smoothed surface (zs, ms); rays written in strength
+   * order at out[off..], returns their number. */
+  function smoothReflections(m, z, zs, ms, d, wv, pres, N, s, za, zb, win, maxn, wr, out, off) {
+    const p = m.p, lam = m.lam, ae = m.ae, B = m.buf;
+    const D = d[N];
+    const kw = 2.0 * Math.PI / lam;
+    const { Ux, Uz, f, Lk, r_x, r_y, r_L, r_s, r_t, ev, ety, c_a, c_cr, c_ci, c_r, used, t_a, t_cr, t_ci, t_r } = B;
+    // mirror condition at the knots: f = (1, zs') . (u_A + u_B)
+    for (let i = 0; i <= N; i++) {
+      const ax = -d[i], az = za - zs[i];
+      const la = Math.max(Math.sqrt(ax * ax + az * az), 1e-9);
+      const bx = D - d[i], bz = zb - zs[i];
+      const lb = Math.max(Math.sqrt(bx * bx + bz * bz), 1e-9);
+      Ux[i] = ax / la + bx / lb;
+      Uz[i] = az / la + bz / lb;
+      f[i] = Ux[i] + ms[i] * Uz[i];
+      Lk[i] = la + lb;
+    }
+    // roots per chord (quadratic model of f), in profile order
+    let nr = 0;
+    for (let i = 0; i < N; i++) {
+      const c0 = f[i], c1 = f[i + 1];
+      const a2 = (ms[i + 1] - ms[i]) * (Uz[i + 1] - Uz[i]);
+      const b1 = c1 - c0 - a2;
+      let t1 = -1.0, t2 = -1.0, ty1 = 1;
+      if ((c0 >= 0.0) !== (c1 >= 0.0)) {
+        t1 = rootOdd(a2, b1, c0);
+        ty1 = c0 >= 0.0 ? 1 : -1;  // f decreasing through the root: minimum of the path length
+      } else if (a2 !== 0.0) {
+        const disc = b1 * b1 - 4.0 * a2 * c0;
+        if (disc > 0.0) {
+          const sq = Math.sqrt(disc);
+          const q = b1 >= 0.0 ? -0.5 * (b1 + sq) : -0.5 * (b1 - sq);
+          let ta = q / a2, tb = c0 / q;
+          if (ta > tb) { const tt = ta; ta = tb; tb = tt; }
+          if (ta > 0.0 && tb < 1.0) {
+            t1 = ta;
+            t2 = tb;
+            ty1 = a2 > 0.0 ? 1 : -1;
+          }
+        }
+      }
+      for (let w_ = 0; w_ < 2; w_++) {
+        const tt = w_ === 0 ? t1 : t2;
+        if (tt < 0.0) continue;
+        const x = d[i] + tt * (d[i + 1] - d[i]);
+        const y = zs[i] + tt * (zs[i + 1] - zs[i]);
+        const mm = ms[i] + tt * (ms[i + 1] - ms[i]);
+        const ax = -x, az = za - y;
+        const la = Math.max(Math.sqrt(ax * ax + az * az), 1e-9);
+        const bx = D - x, bz = zb - y;
+        const lb = Math.max(Math.sqrt(bx * bx + bz * bz), 1e-9);
+        const nn = Math.sqrt(1.0 + mm * mm);
+        const sp = 0.5 * ((-mm * ax + az) / la + (-mm * bx + bz) / lb) / nn;
+        r_x[nr] = x;
+        r_y[nr] = y;
+        r_L[nr] = la + lb;
+        r_s[nr] = sp;
+        r_t[nr] = w_ === 0 ? ty1 : -ty1;
+        nr++;
+      }
+    }
+    if (nr === 0) return 0;
+    // extended sequence of path-length extrema: [B_L, mirrors about x = 0, roots, mirrors about x = D, B_R]
+    const ne = 3 * nr + 2;
+    const L0 = Lk[0], LD = Lk[N];
+    for (let q = 0; q < nr; q++) {
+      ev[nr - q] = 2.0 * L0 - r_L[q];
+      ety[nr - q] = -r_t[q];
+      ev[nr + 1 + q] = r_L[q];
+      ety[nr + 1 + q] = r_t[q];
+      ev[3 * nr - q] = 2.0 * LD - r_L[q];
+      ety[3 * nr - q] = -r_t[q];
+    }
+    ev[0] = 2.0 * L0 - LD;
+    ety[0] = r_t[nr - 1];
+    ev[ne - 1] = 2.0 * LD - L0;
+    ety[ne - 1] = r_t[0];
+    // candidates: front-facing roots, weighted by the fold / end taper
+    let nc = 0;
+    const hw = (win + 1) * s;
+    for (let q = 0; q < nr; q++) {
+      const sp = r_s[q];
+      if (sp <= 0.0) continue;
+      const wf = persistenceWeight(ev, ety, ne, nr, q, kw);
+      if (wf <= 0.0) continue;
+      const x = r_x[q];
+      // water fraction and roughness: triangle kernel around x, presence-weighted samples
+      let aw = 0.0, ar = 0.0, aq = 0.0;
+      const iLo = seg(d, N, s, Math.max(x - hw, 0.0)) - 1, iHi = seg(d, N, s, Math.min(x + hw, D));
+      for (let i = iLo; i <= iHi; i++) {
+        const u = Math.abs(d[i] - x);
+        if (u >= hw) continue;
+        const wk = (1.0 - u / hw) * pres[i];
+        aw += wk;
+        const dz = z[i] - zs[i];
+        ar += wk * (dz * dz);
+        aq += wk * wv[i];
+      }
+      const wfr = aq / aw;
+      const sig = Math.sqrt(ar / aw);
+      let gr = 0.0, gi = 0.0;
+      if (wfr < 1.0) {
+        const tg = 2.0 * Math.PI * sig * sp / lam;
+        const g = gammaTM(sp, p.eg_r, p.eg_i), ex = Math.exp(-2.0 * (tg * tg));
+        gr += (1.0 - wfr) * g[0] * ex;
+        gi += (1.0 - wfr) * g[1] * ex;
+      }
+      if (wfr > 0.0) {
+        const tw = 2.0 * Math.PI * p.water_roughness_m * sp / lam;
+        const g = gammaTM(sp, p.ew_r, p.ew_i), ex = Math.exp(-2.0 * (tw * tw));
+        gr += wfr * g[0] * ex;
+        gi += wfr * g[1] * ex;
+      }
+      // divergence factor of a reflection on the (effective) spherical earth
+      const dd1 = x, dd2 = D - x;
+      const tpsi = Math.max(sp / Math.sqrt(Math.max(1 - sp * sp, 1e-12)), 1e-9);
       const div = 1.0 / Math.sqrt(1.0 + 2.0 * dd1 * dd2 / (ae * (dd1 + dd2) * tpsi));
-      const cr = g[0] * rho * div, ci = g[1] * rho * div;
-      const cabs = Math.hypot(cr, ci);
-      let k;
-      if (n < maxn) {
-        k = n; n++;
-      } else {
-        k = 0;
-        for (let q = 1; q < maxn; q++) {
-          if (Math.hypot(out.cr[off + q], out.ci[off + q]) / out.L[off + q]
-              < Math.hypot(out.cr[off + k], out.ci[off + k]) / out.L[off + k]) k = q;
-        }
-        if (cabs / (L1 + L2) <= Math.hypot(out.cr[off + k], out.ci[off + k]) / out.L[off + k]) continue;
+      const sc = div * wf * Math.min(sp / SIN_EPS, 1.0);
+      const cr = gr * sc, ci = gi * sc;
+      const a = Math.hypot(cr, ci) / r_L[q];
+      if (a <= 0.0) continue;
+      c_a[nc] = a;
+      c_cr[nc] = cr;
+      c_ci[nc] = ci;
+      c_r[nc] = q;
+      used[nc] = 0;
+      nc++;
+    }
+    if (nc === 0) return 0;
+    // strongest maxn + 1 after the leg obstruction (legs evaluated in order of the unobstructed strength)
+    const K1 = maxn + 1;
+    for (let k = 0; k < K1; k++) { t_a[k] = 0.0; t_cr[k] = 0.0; t_ci[k] = 0.0; t_r[k] = 0; }
+    let nt = 0;
+    const r0 = win * s, r1 = (win + 1) * s;
+    for (;;) {
+      let b = -1, ba = -1.0;
+      for (let q = 0; q < nc; q++) {
+        if (!used[q] && c_a[q] > ba) { ba = c_a[q]; b = q; }
       }
-      out.L[off + k] = L1 + L2;
-      out.cr[off + k] = cr;
-      out.ci[off + k] = ci;
-      out.et[off + k] = Math.atan2(pz - za, px - xa);
-      out.er[off + k] = Math.atan2(pz - zb, xb - px);
-      out.px[off + k] = px;
+      if (b < 0) break;
+      if (nt === K1 && ba <= t_a[K1 - 1]) break;
+      used[b] = 1;
+      const q = c_r[b];
+      const x = r_x[q], y = r_y[q];
+      const va = legVmax(z, d, N, s, 0.0, za, x, y, lam, r0, r1);
+      const vb = legVmax(z, d, N, s, D, zb, x, y, lam, r0, r1);
+      let jl = 0.0;
+      if (va > 0.0) jl += J(va - LEG_VSHIFT);  // J(0 - LEG_VSHIFT) == 0: the skip only saves time
+      if (vb > 0.0) jl += J(vb - LEG_VSHIFT);
+      const fac = jl > 0.0 ? Math.pow(10, -jl / 20.0) : 1.0;
+      const a = ba * fac;
+      if (nt === K1 && a <= t_a[K1 - 1]) continue;
+      let k;
+      if (nt < K1) { k = nt; nt++; } else k = K1 - 1;
+      while (k > 0 && t_a[k - 1] < a) {
+        t_a[k] = t_a[k - 1];
+        t_cr[k] = t_cr[k - 1];
+        t_ci[k] = t_ci[k - 1];
+        t_r[k] = t_r[k - 1];
+        k--;
+      }
+      t_a[k] = a;
+      t_cr[k] = c_cr[b] * fac;
+      t_ci[k] = c_ci[b] * fac;
+      t_r[k] = q;
+    }
+    // soft cap at maxn rays
+    const aCut = nt === K1 ? t_a[maxn] : 0.0;
+    let n = 0;
+    for (let k = 0; k < Math.min(nt, maxn); k++) {
+      const den = CAP_BETA * aCut;  // can underflow to 0 for a subnormal aCut
+      let w = den > 0.0 ? Math.min(1.0, (t_a[k] - aCut) / den) : 1.0;
+      w *= wr;
+      if (w <= 0.0) continue;
+      const q = t_r[k];
+      out.L[off + n] = r_L[q];
+      out.cr[off + n] = t_cr[k] * w;
+      out.ci[off + n] = t_ci[k] * w;
+      out.et[off + n] = Math.atan2(r_y[q] - za, r_x[q]);
+      out.er[off + n] = Math.atan2(r_y[q] - zb, D - r_x[q]);
+      n++;
     }
     return n;
   }
@@ -315,56 +595,89 @@
   /** Rays of one link (x, y in metres: east from the left edge, north from the bottom edge). */
   function rays(m, sx, sy, hTx, rx, ry, hRx) {
     const { W, H, mpp, ae, lam, p } = m;
-    const { d, z, zraw, zs, wat } = m.buf;
+    const { d, z, zraw, zs, ms, wv, pres, F } = m.buf;
+    const s = p.step_m;
     const dx = rx - sx, dy = ry - sy;
-    const D = Math.sqrt(dx * dx + dy * dy);
-    const N = Math.max(Math.floor(D / p.step_m), 2);
+    const D = Math.max(Math.sqrt(dx * dx + dy * dy), 1e-6);
+    // samples at spacing s anchored at the midpoint (symmetric); the outermost pair fades in next to the terminals
+    const half = 0.5 * D;
+    let K = Math.max(Math.ceil(half / s) - 1, 0);
+    let e = half - K * s;
+    if (K > 0 && e < END_EPS) {
+      K -= 1;
+      e = half - K * s;
+    }
+    const N = 2 * K + 2;
+    const wend = Math.sqrt(Math.min(e / s, 1.0));
     const clearM = p.terminal_clearance_m;
-    let nw = 0;
     for (let i = 0; i <= N; i++) {
-      const t = i / N;
+      const di = i === 0 ? 0.0 : i === N ? D : half + (i - K - 1) * s;
+      d[i] = di;
+      const t = di / D;
       const x = sx + dx * t, y = sy + dy * t;
       const col = x / mpp - 0.5, row = H - y / mpp - 0.5;
-      d[i] = D * t;
-      zraw[i] = bilinear(d[i] <= clearM || D - d[i] <= clearM ? m.G : m.T, W, H, row, col);
-      z[i] = zraw[i] + d[i] * (D - d[i]) / (2.0 * ae);
-      const rr = Math.min(Math.max(Math.floor(row + 0.5), 0), H - 1);
-      const cc = Math.min(Math.max(Math.floor(col + 0.5), 0), W - 1);
-      wat[i] = m.water[rr * W + cc];
-      nw += wat[i];
+      let zt = bilinearTW(m.T, m.water, W, H, row, col);
+      wv[i] = TW.wv;
+      pres[i] = 1.0;
+      if (i === 0) zraw[i] = groundAt(m, sx, sy);  // terminals stand on the ground (the DSM includes trees / roofs)
+      else if (i === N) zraw[i] = groundAt(m, rx, ry);
+      else {
+        if (clearM > 0.0) {  // open site around each antenna, ramped over one step
+          const gq = Math.min(Math.max((Math.min(di, D - di) - clearM) / s, 0.0), 1.0);
+          if (gq < 1.0) {
+            const zgr = bilinear(m.G, W, H, row, col);
+            zt = zgr + gq * (zt - zgr);
+          }
+        }
+        zraw[i] = zt;
+      }
     }
-    zraw[0] = groundAt(m, sx, sy);
-    zraw[N] = groundAt(m, rx, ry);
-    z[0] = zraw[0];
-    z[N] = zraw[N];
+    // end fade: the outermost samples start on the line terminal ground -> next sample
+    if (K === 0) {
+      zraw[1] = wend * zraw[1] + (1.0 - wend) * (zraw[0] + (zraw[2] - zraw[0]) * d[1] / D);
+      pres[1] = wend;
+    } else {
+      zraw[1] = wend * zraw[1] + (1.0 - wend) * (zraw[0] + (zraw[2] - zraw[0]) * d[1] / d[2]);
+      zraw[N - 1] = wend * zraw[N - 1] + (1.0 - wend) * (
+        zraw[N] + (zraw[N - 2] - zraw[N]) * (D - d[N - 1]) / (D - d[N - 2]));
+      pres[1] = wend;
+      pres[N - 1] = wend;
+    }
+    for (let i = 0; i <= N; i++) z[i] = zraw[i] + d[i] * (D - d[i]) / (2.0 * ae);
     const za = z[0] + hTx, zb = z[N] + hRx;
     const out = m.buf.out;  // reused: callers consume it before the next call
-    out.L.fill(0); out.cr.fill(0); out.ci.fill(0); out.et.fill(0); out.er.fill(0); out.px.fill(0);
+    out.L.fill(0); out.cr.fill(0); out.ci.fill(0); out.et.fill(0); out.er.fill(0);
     out.n = 0; out.los = false; out.diff_db = 0.0;
     const [im, vm] = maxV(z, d, 0, N, za, zb, lam);
-    const db = deltaBullington(m, zraw, z, d, N, hTx, hRx, nw / (N + 1.0));
+    let ps = 0.0, pw = 0.0;
+    for (let i = 0; i <= N; i++) {
+      ps += pres[i];
+      pw += pres[i] * wv[i];
+    }
+    const db = deltaBullington(m, zraw, z, d, N, hTx, hRx, pw / ps);
+    const jdb = db[0];
     const geoLos = im < 0 || vm < 0.0;
-    if (geoLos && db[0] <= 0.5) {
-      const sn = m.smooth_n;
-      for (let i = 0; i <= N; i++) {
-        let a = 0.0, c = 0;
-        for (let q = Math.max(i - sn, 0); q < Math.min(i + sn + 1, N + 1); q++) { a += z[q]; c++; }
-        zs[i] = a / c;
-      }
-      const win = Math.max(Math.floor(sn / 2), 1);
+    // weight of the ray model (direct + reflections) against the diffraction model
+    const wr = geoLos ? wray(jdb) : 0.0;
+    if (geoLos) {
       out.los = true;
+      out.diff_db = jdb * (1.0 - wr);
       out.L[0] = Math.sqrt(D * D + (zb - za) * (zb - za));
-      out.cr[0] = 1.0;
+      out.cr[0] = Math.pow(10, -jdb * (1.0 - wr) / 20.0);
       out.et[0] = Math.atan2(zb - za, D);
       out.er[0] = Math.atan2(za - zb, D);
-      // the Python kernel hands the reflection routine profile views of length N + 1
-      const zv = z.subarray(0, N + 1), zsv = zs.subarray(0, N + 1);
-      const nr = reflections(m, zv, zsv, d, wat, 0, N, 0.0, za, D, zb, win, out, 1, Math.min(p.max_reflections, MAXR - 1));
-      out.n = 1 + nr;
+      out.n = 1;
+      if (wr > 0.0 && p.max_reflections > 0) {
+        // continuous box filter (half-width a) of the piecewise-linear profile: heights and slopes
+        smoothProfile(z, d, N, Math.min((m.smooth_n + 0.5) * s, half), F, zs, ms);
+        const win = Math.max(Math.floor(m.smooth_n / 2), 1);
+        out.n = 1 + smoothReflections(m, z, zs, ms, d, wv, pres, N, s, za, zb, win,
+                                      Math.min(p.max_reflections, MAXR - 1), wr, out, 1);
+      }
     } else {
-      out.los = geoLos;
-      out.diff_db = db[0];
-      const [jdb, dbp, zbp, sT, sR] = db;
+      out.los = false;
+      out.diff_db = jdb;
+      const [, dbp, zbp, sT, sR] = db;
       out.L[0] = Math.sqrt(dbp * dbp + (zbp - za) * (zbp - za)) + Math.sqrt((D - dbp) * (D - dbp) + (zbp - zb) * (zbp - zb));
       out.cr[0] = Math.pow(10, -jdb / 20.0);
       out.et[0] = Math.atan(sT);
@@ -442,6 +755,14 @@
     return 10 * Math.log10(Math.max(eff, 1e-30));
   }
 
+  /** Rays that matter for the label: the direct / diffraction ray plus the reflections with |c| >= 0.1 (n also counts
+   * the faint ones a reflection fades in / out with). */
+  function mainRays(r) {
+    let k = r.n > 0 ? 1 : 0;
+    for (let q = 1; q < r.n; q++) if (Math.hypot(r.cr[q], r.ci[q]) >= 0.1) k++;
+    return k;
+  }
+
   /** Both directions of one link: e-SNR src->rx (src power) and rx->src (rx power), same reciprocal channel. */
   function linkEsnr(m, src, rx, txSrc, txRx, scratch, cab) {
     if (cab === undefined) cab = typeof m.p.cable_loss_db === "number" ? 2 * m.p.cable_loss_db : 0;
@@ -451,7 +772,7 @@
     return {
       fwd: eesmDb(g, budgetDb(m.p, txSrc, cab), beta, m.buf.s),
       rev: eesmDb(g, budgetDb(m.p, txRx, cab), beta, m.buf.s),
-      los: r.los, diff_db: r.diff_db, n: r.n,
+      los: r.los, diff_db: r.diff_db, n: r.n, n_main: mainRays(r),
     };
   }
 
@@ -703,7 +1024,7 @@
       const r = linkEsnr(m, { x: nodes[a].x, y: nodes[a].y, h: s.heights[a] }, { x: nodes[b].x, y: nodes[b].y, h: s.heights[b] },
                          s.tx[a], s.tx[b], undefined, cableDb(m.p, a) + cableDb(m.p, b));
       tab[a + ">" + b] = r.fwd;
-      info[a + ">" + b] = { los: r.los, diff_db: r.diff_db, n: r.n };
+      info[a + ">" + b] = { los: r.los, diff_db: r.diff_db, n: r.n, n_main: r.n_main };
     }
     return { tab, info };
   }
@@ -730,8 +1051,8 @@
       t["R>" + n] = a.fwd;
       t[n + ">R"] = b.fwd;
       if (info) {
-        info["R>" + n] = { los: a.los, diff_db: a.diff_db, n: a.n };
-        info[n + ">R"] = { los: b.los, diff_db: b.diff_db, n: b.n };
+        info["R>" + n] = { los: a.los, diff_db: a.diff_db, n: a.n, n_main: a.n_main };
+        info[n + ">R"] = { los: b.los, diff_db: b.diff_db, n: b.n, n_main: b.n_main };
       }
     }
     return t;

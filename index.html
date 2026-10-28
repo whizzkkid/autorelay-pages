@@ -1309,8 +1309,8 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
   function linkState(i) {
     if (!i) return "";
     if (!i.los) return `차단 ·\u00a0회절 ${i.diff_db.toFixed(1)}\u00a0dB`;
-    if (i.diff_db > 0) return `가시선 ·\u00a0프레넬 일부 가림 +${i.diff_db.toFixed(1)}\u00a0dB`;
-    return `가시선 ·\u00a0${i.n}개\u00a0경로`;
+    if (i.diff_db >= 0.05) return `가시선 ·\u00a0프레넬 일부 가림 +${i.diff_db.toFixed(1)}\u00a0dB`;
+    return `가시선 ·\u00a0${i.n_main != null ? i.n_main : i.n}개\u00a0경로`;  // direct + reflections with |c| >= 0.1
   }
   const fcost = (w) => (isFinite(w) ? String(+w.toFixed(2)) : "∞");  // 90, 22.5, 28.6
   function renderTable() {
