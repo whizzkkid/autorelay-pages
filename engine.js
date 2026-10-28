@@ -72,7 +72,7 @@
         d: F64(maxN), z: F64(maxN), zraw: F64(maxN), zs: F64(maxN), zse: F64(maxN),
         wv: F64(maxN), pres: F64(maxN), ms: F64(maxN), F: F64(maxN),
         Ux: F64(maxN), Uz: F64(maxN), f: F64(maxN), Lk: F64(maxN),
-        r_x: F64(mr), r_y: F64(mr), r_L: F64(mr), r_s: F64(mr), r_t: new Int8Array(mr),
+        r_x: F64(mr), r_y: F64(mr), r_L: F64(mr), r_P: F64(mr), r_s: F64(mr), r_t: new Int8Array(mr),
         ev: F64(6 * maxN + 8), ety: new Int8Array(6 * maxN + 8),
         c_a: F64(mr), c_cr: F64(mr), c_ci: F64(mr), c_r: new Int32Array(mr), used: new Uint8Array(mr),
         t_a: F64(MAXR + 1), t_cr: F64(MAXR + 1), t_ci: F64(MAXR + 1), t_r: new Int32Array(MAXR + 1),
@@ -276,14 +276,15 @@
     return best;
   }
 
-  /** Fold / end weight of root q: fade(k * persistence) of its path-length extremum (elder rule with a soft tie). */
+  /** Fold / end weight of root q: fade(k * persistence) of its path-length extremum (elder rule with a soft tie; the
+   * candidates combine through the running maximum Q of their tie weights, so a fold pair elsewhere changes nothing). */
   function persistenceWeight(ev, ety, ne, nr, q, kw) {
     const p = nr + 1 + q;
     const sg = ety[p] > 0 ? 1.0 : -1.0;
     const vi = sg * ev[p];
     let w = 1.0;
     for (let dirn = -1; dirn <= 1; dirn += 2) {
-      let M = -1e300, rem = 1.0, acc = 0.0;
+      let M = -1e300, Q = 0.0, acc = 0.0;
       for (let j = p + dirn; j >= 0 && j < ne; j += dirn) {
         if (ety[j] === ety[p]) {
           const dv = vi - sg * ev[j];  // lead of the candidate
@@ -300,16 +301,16 @@
               qk = sq * sq;
             }
           }
-          if (qk > 0.0) {
-            acc += rem * qk * fade(kw * Math.max(bar, 0.0));
-            rem *= 1.0 - qk;
-            if (rem <= 0.0) break;
+          if (qk > Q) {
+            acc += (qk - Q) * fade(kw * Math.max(bar, 0.0));
+            Q = qk;
+            if (Q >= 1.0) break;
           }
         } else if (sg * ev[j] > M) {
           M = sg * ev[j];
         }
       }
-      if (rem > 0.0) acc += rem * fade(kw * Math.max(M - vi, 0.0));
+      if (Q < 1.0) acc += (1.0 - Q) * fade(kw * Math.max(M - vi, 0.0));
       if (acc < w) w = acc;
     }
     return w;
@@ -321,7 +322,7 @@
     const p = m.p, lam = m.lam, ae = m.ae, B = m.buf;
     const D = d[N];
     const kw = 2.0 * Math.PI / lam;
-    const { Ux, Uz, f, Lk, r_x, r_y, r_L, r_s, r_t, ev, ety, c_a, c_cr, c_ci, c_r, used, t_a, t_cr, t_ci, t_r } = B;
+    const { Ux, Uz, f, Lk, r_x, r_y, r_L, r_P, r_s, r_t, ev, ety, c_a, c_cr, c_ci, c_r, used, t_a, t_cr, t_ci, t_r } = B;
     // mirror condition at the knots: f = (1, zs') . (u_A + u_B)
     for (let i = 0; i <= N; i++) {
       const ax = -d[i], az = za - zs[i];
@@ -333,12 +334,15 @@
       f[i] = Ux[i] + ms[i] * Uz[i];
       Lk[i] = la + lb;
     }
-    // roots per chord (quadratic model of f), in profile order
+    // roots per chord (quadratic model of f), in profile order; the persistence uses the path length of the same
+    // model, P(x) = L(0) - int_0^x f dx (closed form per chord), so every maximum lies above its neighbouring minima
     let nr = 0;
+    let Pi = Lk[0];  // model path length at knot i
     for (let i = 0; i < N; i++) {
       const c0 = f[i], c1 = f[i + 1];
       const a2 = (ms[i + 1] - ms[i]) * (Uz[i + 1] - Uz[i]);
       const b1 = c1 - c0 - a2;
+      const h = d[i + 1] - d[i], hb = 0.5 * b1, a3 = a2 / 3.0;
       let t1 = -1.0, t2 = -1.0, ty1 = 1;
       if ((c0 >= 0.0) !== (c1 >= 0.0)) {
         t1 = rootOdd(a2, b1, c0);
@@ -372,21 +376,23 @@
         r_x[nr] = x;
         r_y[nr] = y;
         r_L[nr] = la + lb;
+        r_P[nr] = Pi - h * (tt * (c0 + tt * (hb + tt * a3)));
         r_s[nr] = sp;
         r_t[nr] = w_ === 0 ? ty1 : -ty1;
         nr++;
       }
+      Pi = Pi - h * (c0 + (hb + a3));
     }
     if (nr === 0) return 0;
     // extended sequence of path-length extrema: [B_L, mirrors about x = 0, roots, mirrors about x = D, B_R]
     const ne = 3 * nr + 2;
-    const L0 = Lk[0], LD = Lk[N];
+    const L0 = Lk[0], LD = Pi;
     for (let q = 0; q < nr; q++) {
-      ev[nr - q] = 2.0 * L0 - r_L[q];
+      ev[nr - q] = 2.0 * L0 - r_P[q];
       ety[nr - q] = -r_t[q];
-      ev[nr + 1 + q] = r_L[q];
+      ev[nr + 1 + q] = r_P[q];
       ety[nr + 1 + q] = r_t[q];
-      ev[3 * nr - q] = 2.0 * LD - r_L[q];
+      ev[3 * nr - q] = 2.0 * LD - r_P[q];
       ety[3 * nr - q] = -r_t[q];
     }
     ev[0] = 2.0 * L0 - LD;
@@ -507,7 +513,12 @@
     for (let i = 1; i < N; i++) stim = Math.max(stim, (z[i] - za) / d[i]);
     const str = (zb - za) / D;
     let luc, dbp, zbp, sT, sR;
-    if (stim < str) {
+    let los = stim < str, srim = -1e30;
+    if (!los) {
+      for (let i = 1; i < N; i++) srim = Math.max(srim, (z[i] - zb) / (D - d[i]));
+      if (stim + srim <= 0.0) los = true;  // exact grazing: the limit of the line-of-sight case (no 0 / 0)
+    }
+    if (los) {
       let vmax = -1e30, imax = 1;
       for (let i = 1; i < N; i++) {
         const v = (z[i] - (za * (D - d[i]) + zb * d[i]) / D) * Math.sqrt(2.0 * D / (lam * d[i] * (D - d[i])));
@@ -518,10 +529,9 @@
       zbp = za + (zb - za) * dbp / D;
       sT = str; sR = -str;
     } else {
-      let srim = -1e30;
-      for (let i = 1; i < N; i++) srim = Math.max(srim, (z[i] - zb) / (D - d[i]));
       dbp = (zb - za + srim * D) / (stim + srim);
-      dbp = Math.min(Math.max(dbp, 1e-3), D - 1e-3);
+      const e = Math.min(1e-3, 0.5 * D);  // keep the Bullington point off the terminals (D >= 1e-6 m)
+      dbp = Math.min(Math.max(dbp, e), D - e);
       zbp = za + stim * dbp;
       const vb = (za + stim * dbp - (za * (D - dbp) + zb * dbp) / D) * Math.sqrt(2.0 * D / (lam * dbp * (D - dbp)));
       luc = J(vb);
@@ -608,7 +618,7 @@
       e = half - K * s;
     }
     const N = 2 * K + 2;
-    const wend = Math.sqrt(Math.min(e / s, 1.0));
+    const wend = Math.sqrt(Math.min(Math.max(e - END_EPS, 0.0) / s, 1.0));  // 0 where the pair appears (e = END_EPS)
     const clearM = p.terminal_clearance_m;
     for (let i = 0; i <= N; i++) {
       const di = i === 0 ? 0.0 : i === N ? D : half + (i - K - 1) * s;
@@ -1085,7 +1095,7 @@
              relay_xy: xy, final_table: fin, final: decide(fin, p, true) };
   }
 
-  const api = { cableDb, tableLevel, costOf, rateScale, edgeWeight, nodeTable, relayLinks, finalTable, plan, makeModel, rays, channelGain, eesmDb, budgetDb, linkEsnr, groundAt, decide, dijkstra, relayGrid,
+  const api = { cableDb, tableLevel, costOf, rateScale, edgeWeight, nodeTable, relayLinks, finalTable, plan, makeModel, rays, channelGain, eesmDb, budgetDb, linkEsnr, groundAt, bullington, decide, dijkstra, relayGrid,
                 treeFromPaths, relayScore, BIG, rankTrees, enumerateTrees, candidateGrid, localGrid, refinePick, pickCandidates, MS_PATHS, NODE_NAMES, RELAY };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.AutoRelayEngine = api;
