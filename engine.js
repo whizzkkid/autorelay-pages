@@ -12,15 +12,25 @@
   "use strict";
   const C0 = 299792458.0;
   const R_EARTH = 6371000.0;
-  const MAXR = 5;
+  const KMAX = 4;              // reflection slots (max_reflections is capped here)
+  const OUT_CAP = 32;         // reflection rays per link (output capacity, the same for every max_reflections)
+  const MAXR = 1 + OUT_CAP;    // rays per link: the direct / diffracted ray and up to OUT_CAP reflection rays
   // continuous ray model (autorelay/terrain.py)
   const FADE_X1 = Math.PI;    // k * dL [rad] at which a specular point reaches full weight (barrier lambda / 2)
   const WRAY_J0 = 0.0;        // delta-Bullington loss [dB] up to which the ray model has full weight ...
   const WRAY_J1 = 3.0;        // ... and from which the diffraction model alone is used
   const LEG_VSHIFT = 0.78062; // leg loss J(v_max - LEG_VSHIFT): a clear leg gives exactly 0 dB
-  const CAP_BETA = 0.5;       // soft cap: a kept ray has full weight at a >= (1 + CAP_BETA) a_{K+1}
-  const TIE_REL = 1.0;        // persistence tie band
+  const CAP_BETA = 0.5;       // soft cap: a region has full weight at a strength >= (1 + CAP_BETA) x the cut level
+  const CUT_LO = 0.25;        // cut level: mean region strength over the counts [maxn + CUT_LO, maxn + CUT_HI] ...
+  const CUT_HI = 0.75;        // ... i.e. the (maxn + 1)-th strongest region
+  const FAINT_LO = 5e-4;      // a reflection weaker than FAINT_LO x the free-space direct ray is not output (handed
+  const FAINT_HI = 1e-3;      // to its tight partners), full output from FAINT_HI (smoothstep)
+  const TIE_REL = 0.25;       // persistence tie band: full claim at a barrier-depth ratio (2 + TIE_REL) / (2 - TIE_REL)
+  const TIE_BLEND = 2.0;      // the same claims with the widest band (full only at zero depth): amplitude blend masses
+  const EG_BOUND = 8.0;       // a member carries its region's external weight e up to EG_BOUND x its own weight
   const SIN_EPS = 1e-4;       // grazing fade
+  const GB_LO = 1.9, GB_HI = 2.1;    // P.452 G(Y): branch blend over B in [GB_LO, GB_HI] (0.0175 dB apart at B = 2)
+  const FX_LO = 1.55, FX_HI = 1.65;  // P.452 F(X): branch blend over X in [FX_LO, FX_HI] (7e-6 dB apart at X = 1.6)
   const END_EPS = 1e-6;       // [m] an outermost sample pair closer than this to the terminals is dropped
   const NODE_NAMES = ["BS", "MS1", "MS2"];
   const MS_NODES = ["MS1", "MS2"];
@@ -71,11 +81,16 @@
       buf: {
         d: F64(maxN), z: F64(maxN), zraw: F64(maxN), zs: F64(maxN), zse: F64(maxN),
         wv: F64(maxN), pres: F64(maxN), ms: F64(maxN), F: F64(maxN),
-        Ux: F64(maxN), Uz: F64(maxN), f: F64(maxN), Lk: F64(maxN),
-        r_x: F64(mr), r_y: F64(mr), r_L: F64(mr), r_P: F64(mr), r_s: F64(mr), r_t: new Int8Array(mr),
-        ev: F64(6 * maxN + 8), ety: new Int8Array(6 * maxN + 8),
-        c_a: F64(mr), c_cr: F64(mr), c_ci: F64(mr), c_r: new Int32Array(mr), used: new Uint8Array(mr),
-        t_a: F64(MAXR + 1), t_cr: F64(MAXR + 1), t_ci: F64(MAXR + 1), t_r: new Int32Array(MAXR + 1),
+        Ux: F64(maxN), Uz: F64(maxN), f: F64(maxN),
+        r_x: F64(mr), r_y: F64(mr), r_L: F64(mr), r_d: F64(mr), r_s: F64(mr), r_t: new Int8Array(mr),
+        wg: F64(mr), eg: F64(mr), mu: F64(mr),
+        dE: F64(6 * maxN + 8), ety: new Int8Array(6 * maxN + 8),
+        mi: new Int32Array(mr), mc: F64(mr), cidx: new Int32Array(mr),
+        c_cr: F64(mr), c_ci: F64(mr), c_r: new Int32Array(mr), c_s: F64(mr), c_m: F64(mr),
+        fac: F64(mr), c_br: F64(mr), c_bi: F64(mr), kap: F64(mr), sl: F64(mr), rho0: F64(mr),
+        u: F64(mr), g: F64(mr), ek: F64(mr), Dn: F64(mr),
+        s_rho: F64(mr), s_kap: F64(mr), s_b: new Int32Array(mr), done: new Uint8Array(mr),
+        o_b: new Int32Array(mr), o_w: F64(mr), o_e: F64(mr),
         hr: F64(p.n_sub), hi: F64(p.n_sub), s: F64(p.n_sub),
         out: { n: 0, L: F64(MAXR), cr: F64(MAXR), ci: F64(MAXR), et: F64(MAXR), er: F64(MAXR), los: false, diff_db: 0 },
       },
@@ -230,7 +245,7 @@
     return 1.0 - u * u * (3.0 - 2.0 * u);
   }
 
-  /** The root in [0, 1] of a2 t^2 + b1 t + c0 when the values at t = 0 and t = 1 differ in sign. */
+  /** The root in [0, 1] of a2 t^2 + b1 t + c0 when the values at t = 0 and t = 1 differ in sign (0 counts as positive). */
   function rootOdd(a2, b1, c0) {
     let t;
     if (a2 === 0.0) {
@@ -245,7 +260,10 @@
       } else {
         const t1 = q / a2, t2 = c0 / q;
         const e1 = Math.max(-t1, t1 - 1.0, 0.0), e2 = Math.max(-t2, t2 - 1.0, 0.0);
-        t = e1 < e2 ? t1 : t2;
+        if (e1 < e2) t = t1;
+        else if (e2 < e1) t = t2;
+        else if (Math.min(t1, 1.0 - t1) >= Math.min(t2, 1.0 - t2)) t = t1;  // one is an exact zero at an end
+        else t = t2;
       }
     }
     return Math.min(Math.max(t, 0.0), 1.0);
@@ -276,44 +294,337 @@
     return best;
   }
 
-  /** Fold / end weight of root q: fade(k * persistence) of its path-length extremum (elder rule with a soft tie; the
-   * candidates combine through the running maximum Q of their tie weights, so a fold pair elsewhere changes nothing). */
-  function persistenceWeight(ev, ety, ne, nr, q, kw) {
-    const p = nr + 1 + q;
-    const sg = ety[p] > 0 ? 1.0 : -1.0;
-    const vi = sg * ev[p];
-    let w = 1.0;
+  /** Complementary tie ramp: claim(u) + claim(-u) = 1. */
+  function claim(u) {
+    if (u <= -1.0) return 0.0;
+    if (u >= 1.0) return 1.0;
+    const q = Math.sin(0.25 * Math.PI * (u + 1.0));
+    return q * q;
+  }
+
+  /** Integral of c0 + b1 t + a2 t^2 over [ta, tb] as (tb - ta) x its mean value. */
+  function chordInt(c0, b1, a2, ta, tb) {
+    return (tb - ta) * (c0 + 0.5 * b1 * (ta + tb) + a2 * (ta * ta + ta * tb + tb * tb) / 3.0);
+  }
+
+  /** Extended alternating sequence [B_L, mirrors about 0, roots, mirrors about D, B_R] as types ety and local steps
+   * dE[e] = value[e+1] - value[e]; steps of the wrong sign (rounding) are set to 0 (r_d in place). */
+  function extendedSteps(r_d, r_t, nr, tail, dE, ety) {
+    if ((r_d[0] > 0.0 && r_t[0] > 0) || (r_d[0] < 0.0 && r_t[0] < 0)) r_d[0] = 0.0;
+    for (let q = 1; q < nr; q++) {
+      if ((r_d[q] < 0.0 && r_t[q - 1] > 0) || (r_d[q] > 0.0 && r_t[q - 1] < 0)) r_d[q] = 0.0;
+    }
+    if ((tail < 0.0 && r_t[nr - 1] > 0) || (tail > 0.0 && r_t[nr - 1] < 0)) tail = 0.0;
+    const hl = r_d[0];
+    dE[0] = tail;
+    for (let e = 1; e < nr; e++) dE[e] = r_d[nr - e];
+    dE[nr] = 2.0 * hl;
+    for (let q = 0; q < nr - 1; q++) dE[nr + 1 + q] = r_d[q + 1];
+    dE[2 * nr] = 2.0 * tail;
+    for (let k = 0; k < nr - 1; k++) dE[2 * nr + 1 + k] = r_d[nr - 1 - k];
+    dE[3 * nr] = hl;
+    for (let q = 0; q < nr; q++) {
+      ety[nr - q] = -r_t[q];
+      ety[nr + 1 + q] = r_t[q];
+      ety[3 * nr - q] = -r_t[q];
+    }
+    ety[0] = r_t[nr - 1];
+    ety[3 * nr + 1] = r_t[0];
+  }
+
+  /** Fold / end weight w of root q (returned) and the external weight e of its stationary region (PWE.e): fade(k *
+   * persistence) of its path-length extremum, values relative to the root from the local steps; soft elder rule with
+   * complementary claims (two nearly equal extrema share one weight), combined through the running maximum Q (a fold
+   * pair elsewhere changes nothing); for e each claim is scaled by fade(k * range to the candidate). */
+  const PWE = { e: 0, w2: 0 };
+  function persistenceWeight(dE, ety, nr, q, kw) {
+    const p = nr + 1 + q, t = ety[p];
+    const sg = t > 0 ? 1.0 : -1.0;
+    const ne = 3 * nr + 2;
+    let w = 1.0, e = 1.0, w2 = 1.0;
     for (let dirn = -1; dirn <= 1; dirn += 2) {
-      let M = -1e300, Q = 0.0, acc = 0.0;
+      let rel = 0.0, M = 0.0, Q = 0.0, acc = 0.0, Qe = 0.0, acce = 0.0, Q2 = 0.0, acc2 = 0.0;
       for (let j = p + dirn; j >= 0 && j < ne; j += dirn) {
-        if (ety[j] === ety[p]) {
-          const dv = vi - sg * ev[j];  // lead of the candidate
-          const bar = M - vi;          // barrier between the root and the candidate
-          let qk;
-          if (dv <= 0.0) qk = 0.0;
-          else if (bar <= 0.0) qk = 1.0;
-          else {
-            const u = dv / (TIE_REL * bar);
-            if (u <= 0.0) qk = 0.0;
-            else if (u >= 1.0) qk = 1.0;
-            else {
-              const sq = Math.sin(0.5 * Math.PI * u);
-              qk = sq * sq;
-            }
+        if (dirn > 0) rel += sg * dE[j - 1];
+        else rel -= sg * dE[j];
+        if (ety[j] === t) {
+          const dd = M + (M - rel);
+          const den = TIE_REL * dd;
+          let qk, qk2;
+          if (den > 0.0) {
+            qk = claim(-2.0 * rel / den);
+            qk2 = claim(-2.0 * rel / (TIE_BLEND * dd));
+          } else {
+            qk = 0.5;
+            qk2 = 0.5;
           }
           if (qk > Q) {
-            acc += (qk - Q) * fade(kw * Math.max(bar, 0.0));
+            acc += (qk - Q) * fade(kw * M);
             Q = qk;
-            if (Q >= 1.0) break;
           }
-        } else if (sg * ev[j] > M) {
-          M = sg * ev[j];
+          const qe = qk * fade(kw * (M - Math.min(rel, 0.0)));  // the claim of a candidate outside the root's region
+          if (qe > Qe) {
+            acce += (qe - Qe) * fade(kw * M);
+            Qe = qe;
+          }
+          if (qk2 > Q2) {
+            acc2 += (qk2 - Q2) * fade(kw * M);
+            Q2 = qk2;
+          }
+          if (Q >= 1.0 && Qe >= 1.0 && Q2 >= 1.0) break;
+        } else if (rel > M) {
+          M = rel;
+          if (kw * M >= FADE_X1) break;  // every later fade is 1: the rest adds exactly 1 - Q (1 - Qe, 1 - Q2)
         }
       }
-      if (Q < 1.0) acc += (1.0 - Q) * fade(kw * Math.max(M - vi, 0.0));
+      if (Q < 1.0) acc += (1.0 - Q) * fade(kw * M);
+      if (Qe < 1.0) acce += (1.0 - Qe) * fade(kw * M);
+      if (Q2 < 1.0) acc2 += (1.0 - Q2) * fade(kw * M);
       if (acc < w) w = acc;
+      if (acce < e) e = acce;
+      if (acc2 < w2) w2 = acc2;
     }
+    PWE.e = e;
+    PWE.w2 = w2;
     return w;
+  }
+
+  /** Members of the stationary region around root q (same-type real roots j with closeness c = 1 - fade(k b_qj) > 0):
+   * mi[0] = q, mc[0] = 1, then the walk to the left, then to the right; returns their number. */
+  function regionMembers(dE, ety, nr, q, kw, mi, mc) {
+    const p = nr + 1 + q, t = ety[p];
+    const sg = t > 0 ? 1.0 : -1.0;
+    mi[0] = q;
+    mc[0] = 1.0;
+    let m = 1;
+    for (let dirn = -1; dirn <= 1; dirn += 2) {
+      let rel = 0.0, M = 0.0;
+      for (let j = p + dirn; j >= nr + 1 && j <= 2 * nr; j += dirn) {
+        if (dirn > 0) rel += sg * dE[j - 1];
+        else rel -= sg * dE[j];
+        if (ety[j] === t) {
+          const c = 1.0 - fade(kw * (M - Math.min(rel, 0.0)));
+          if (c > 0.0) {
+            mi[m] = j - nr - 1;
+            mc[m] = c;
+            m++;
+          }
+        } else if (rel > M) {
+          M = rel;
+          if (kw * M >= FADE_X1) break;
+        }
+      }
+    }
+    return m;
+  }
+
+  /** Summed weight S (returned) and external weight R (CS.r) of the stationary region around root q. */
+  const CS = { r: 0 };
+  function clusterSum(dE, ety, wg, eg, nr, q, kw, mi, mc) {
+    const m = regionMembers(dE, ety, nr, q, kw, mi, mc);
+    let S = wg[q], Rg = eg[q];
+    for (let k = 1; k < m; k++) {
+      const j = mi[k], c = mc[k];
+      S += c * wg[j];
+      if (c * eg[j] > Rg) Rg = c * eg[j];
+    }
+    CS.r = Rg;
+    return S;
+  }
+
+  /** Soft-cap weight of strength a at the cut level lv. */
+  function capH(a, lv) {
+    if (a <= lv) return 0.0;
+    const den = CAP_BETA * lv;  // can underflow to 0 for a subnormal lv
+    return den > 0.0 ? Math.min(1.0, (a - lv) / den) : 1.0;
+  }
+
+  /** Amplitude factor of the leg obstruction of a reflection at (x, y). */
+  function legFactor(z, d, N, s, za, zb, x, y, lam, r0, r1) {
+    const D = d[N];
+    const va = legVmax(z, d, N, s, 0.0, za, x, y, lam, r0, r1);
+    const vb = legVmax(z, d, N, s, D, zb, x, y, lam, r0, r1);
+    let jl = 0.0;
+    if (va > 0.0) jl += J(va - LEG_VSHIFT);  // J(0 - LEG_VSHIFT) == 0: the skip only saves time
+    if (vb > 0.0) jl += J(vb - LEG_VSHIFT);
+    return jl > 0.0 ? Math.pow(10, -jl / 20.0) : 1.0;
+  }
+
+  /** Cut level: mean of the quantile function of the region strengths (sorted descending, counts s_kap) over the
+   * counts [K + CUT_LO, K + CUT_HI], i.e. the (K + 1)-th strongest region. */
+  function cutLevel(s_rho, s_kap, ns, K) {
+    const lo = K + CUT_LO, hi = K + CUT_HI;
+    let acc = 0.0, cum = 0.0;
+    for (let p = 0; p < ns; p++) {
+      const c1 = cum + s_kap[p];
+      const ov = Math.min(c1, hi) - Math.max(cum, lo);
+      if (ov > 0.0) acc += ov * s_rho[p];
+      cum = c1;
+      if (cum >= hi) break;
+    }
+    return acc / (hi - lo);
+  }
+
+  /** Tight closeness c^32 of two members of a stationary region, by five squarings (as terrain._tight). */
+  function tight(c) {
+    let t = c * c;
+    t = t * t;
+    t = t * t;
+    t = t * t;
+    return t * t;
+  }
+
+  /** Region amplitudes (blend of the members' coefficients with masses tight(c) c_m, into c_br / c_bi) and the soft
+   * cap over stationary regions (region strength rho, counts kappa, cut at the (maxn + 1)-th strongest region); legs
+   * evaluated lazily into fac; kept share u = share x cut weight, keep factor g = faint fade x output capacity
+   * (OUT_CAP rays), the rest handed to the tight partners.  Writes the kept candidates to o_b / o_w in order of
+   * decreasing output strength and returns their number (a line-by-line copy of terrain._cap_weights). */
+  function capWeights(B, dE, ety, nr, kw, nc, maxn, z, d, N, s, za, zb, lam, r0, r1) {
+    const { mi, mc, cidx, c_r, c_s, c_m, c_cr, c_ci, r_L, r_x, r_y, fac, c_br, c_bi, kap, sl, rho0 } = B;
+    const { s_rho, s_kap, s_b, done, o_b, o_w, o_e, u, g, ek, Dn } = B;
+    for (let b = 0; b < nc; b++) {
+      const m = regionMembers(dE, ety, nr, c_r[b], kw, mi, mc);
+      let P = 0.0, SL = 0.0, Mu = 0.0, AM = 0.0;
+      for (let k = 0; k < m; k++) {
+        const jc = cidx[mi[k]];
+        if (jc >= 0) {
+          P += mc[k] * c_s[jc];
+          SL += mc[k] * c_s[jc] / r_L[c_r[jc]];
+          const t = tight(mc[k]) * c_m[jc];
+          Mu += t;
+          AM += t * Math.hypot(c_cr[jc], c_ci[jc]);
+        }
+      }
+      kap[b] = c_s[b] / P;
+      sl[b] = SL;
+      rho0[b] = (Mu > 0.0 ? AM / Mu : Math.hypot(c_cr[b], c_ci[b])) * SL;
+      done[b] = 0;
+    }
+    const K = maxn, hiC = K + CUT_HI;
+    let ns = 0;
+    for (;;) {
+      let b = -1, ba = -1.0;
+      for (let k = 0; k < nc; k++) {
+        if (!done[k] && rho0[k] > ba) { ba = rho0[k]; b = k; }
+      }
+      if (b < 0) break;
+      let qh = 0.0, cum = 0.0;  // resolved quantile at count hiC (from below)
+      for (let p = 0; p < ns; p++) {
+        cum += s_kap[p];
+        if (cum >= hiC) { qh = s_rho[p]; break; }
+      }
+      if (ba <= qh) break;
+      done[b] = 1;
+      const m = regionMembers(dE, ety, nr, c_r[b], kw, mi, mc);
+      let Mu = 0.0, ar = 0.0, ai = 0.0;
+      for (let k = 0; k < m; k++) {
+        const jc = cidx[mi[k]];
+        if (jc < 0) continue;
+        if (fac[jc] < 0.0) {
+          const qq = c_r[jc];
+          fac[jc] = legFactor(z, d, N, s, za, zb, r_x[qq], r_y[qq], lam, r0, r1);
+        }
+        const t = tight(mc[k]) * c_m[jc];
+        Mu += t;
+        const tf = t * fac[jc];
+        ar += c_cr[jc] * tf;
+        ai += c_ci[jc] * tf;
+      }
+      if (Mu > 0.0) {
+        ar = ar / Mu;
+        ai = ai / Mu;
+      } else {
+        ar = c_cr[b] * fac[b];
+        ai = c_ci[b] * fac[b];
+      }
+      c_br[b] = ar;
+      c_bi[b] = ai;
+      const rb = Math.hypot(ar, ai) * sl[b];
+      let p = ns;
+      ns++;
+      while (p > 0 && s_rho[p - 1] < rb) {
+        s_rho[p] = s_rho[p - 1];
+        s_kap[p] = s_kap[p - 1];
+        s_b[p] = s_b[p - 1];
+        p--;
+      }
+      s_rho[p] = rb;
+      s_kap[p] = kap[b];
+      s_b[p] = b;
+    }
+    const lv = cutLevel(s_rho, s_kap, ns, K);
+    // kept share u (cut weight), keep factor g (faint fade x output capacity)
+    const D = d[N];
+    const L0 = Math.sqrt(D * D + (zb - za) * (zb - za));
+    for (let b = 0; b < nc; b++) { u[b] = 0.0; g[b] = 0.0; ek[b] = 0.0; Dn[b] = 0.0; }
+    let ne = 0;
+    for (let p = 0; p < ns; p++) {
+      const hh = capH(s_rho[p], lv);
+      if (hh <= 0.0) break;  // descending strengths: all further ones are cut too
+      const b = s_b[p];
+      u[b] = c_s[b] * hh;
+      let e = u[b] * Math.hypot(c_br[b], c_bi[b]) / r_L[c_r[b]];
+      const x = e * L0;
+      if (x >= FAINT_HI) g[b] = 1.0;
+      else if (x > FAINT_LO) {
+        const t = (x - FAINT_LO) / (FAINT_HI - FAINT_LO);
+        g[b] = t * t * (3.0 - 2.0 * t);
+      }
+      e = g[b] * e;
+      ek[b] = e;
+      if (e > 0.0) {
+        let k = ne;
+        ne++;
+        while (k > 0 && o_e[k - 1] < e) {
+          o_e[k] = o_e[k - 1];
+          k--;
+        }
+        o_e[k] = e;
+      }
+    }
+    if (ne > OUT_CAP) {
+      const eCut = o_e[OUT_CAP];
+      for (let b = 0; b < nc; b++) {
+        if (g[b] > 0.0) g[b] = g[b] * capH(ek[b], eCut);  // ek > eCut for at most OUT_CAP members
+      }
+    }
+    // hand-off of the parts not kept to the tight partners
+    for (let b = 0; b < nc; b++) {
+      if (u[b] > 0.0 && g[b] < 1.0) {
+        const m = regionMembers(dE, ety, nr, c_r[b], kw, mi, mc);
+        let Dh = 0.0;
+        for (let k = 0; k < m; k++) {
+          const jc = cidx[mi[k]];
+          if (jc >= 0) Dh += tight(mc[k]) * (g[jc] * u[jc]);
+        }
+        Dn[b] = Math.max(Dh, u[b]);
+      }
+    }
+    let na = 0;
+    for (let b = 0; b < nc; b++) {
+      const gu = g[b] * u[b];
+      if (gu <= 0.0) continue;
+      const m = regionMembers(dE, ety, nr, c_r[b], kw, mi, mc);
+      let add = 0.0;
+      for (let k = 0; k < m; k++) {
+        const jc = cidx[mi[k]];
+        if (jc >= 0 && Dn[jc] > 0.0) add += tight(mc[k]) * ((1.0 - g[jc]) * u[jc] / Dn[jc]);
+      }
+      const w = gu * (1.0 + add) / c_s[b];
+      const e = c_s[b] * Math.hypot(c_br[b], c_bi[b]) / r_L[c_r[b]] * w;
+      let k = na;
+      na++;
+      while (k > 0 && o_e[k - 1] < e) {
+        o_e[k] = o_e[k - 1];
+        o_b[k] = o_b[k - 1];
+        o_w[k] = o_w[k - 1];
+        k--;
+      }
+      o_e[k] = e;
+      o_b[k] = b;
+      o_w[k] = w;
+    }
+    return na;
   }
 
   /** Specular reflections A = (0, za) -> B = (D, zb) on the C1 smoothed surface (zs, ms); rays written in strength
@@ -322,7 +633,8 @@
     const p = m.p, lam = m.lam, ae = m.ae, B = m.buf;
     const D = d[N];
     const kw = 2.0 * Math.PI / lam;
-    const { Ux, Uz, f, Lk, r_x, r_y, r_L, r_P, r_s, r_t, ev, ety, c_a, c_cr, c_ci, c_r, used, t_a, t_cr, t_ci, t_r } = B;
+    const { Ux, Uz, f, r_x, r_y, r_L, r_d, r_s, r_t, wg, eg, mu, dE, ety, mi, mc, cidx, c_cr, c_ci, c_r, c_s, c_m } = B;
+    const { fac, c_br, c_bi, o_b, o_w } = B;
     // mirror condition at the knots: f = (1, zs') . (u_A + u_B)
     for (let i = 0; i <= N; i++) {
       const ax = -d[i], az = za - zs[i];
@@ -332,38 +644,46 @@
       Ux[i] = ax / la + bx / lb;
       Uz[i] = az / la + bz / lb;
       f[i] = Ux[i] + ms[i] * Uz[i];
-      Lk[i] = la + lb;
     }
-    // roots per chord (quadratic model of f), in profile order; the persistence uses the path length of the same
-    // model, P(x) = L(0) - int_0^x f dx (closed form per chord), so every maximum lies above its neighbouring minima
+    // roots per chord (quadratic model of f; f = 0 counts as positive), in profile order, with the local path-length
+    // step between neighbouring roots (integral of the same model of f; the exact cubic for a pair in one chord)
     let nr = 0;
-    let Pi = Lk[0];  // model path length at knot i
+    let acc = 0.0;  // path-length step since the last root (since x = 0 before the first one)
     for (let i = 0; i < N; i++) {
       const c0 = f[i], c1 = f[i + 1];
       const a2 = (ms[i + 1] - ms[i]) * (Uz[i + 1] - Uz[i]);
       const b1 = c1 - c0 - a2;
-      const h = d[i + 1] - d[i], hb = 0.5 * b1, a3 = a2 / 3.0;
-      let t1 = -1.0, t2 = -1.0, ty1 = 1;
+      const h = d[i + 1] - d[i];
+      let t1 = -1.0, t2 = -1.0, ty1 = 1, pair = 0.0;
       if ((c0 >= 0.0) !== (c1 >= 0.0)) {
         t1 = rootOdd(a2, b1, c0);
         ty1 = c0 >= 0.0 ? 1 : -1;  // f decreasing through the root: minimum of the path length
-      } else if (a2 !== 0.0) {
+      } else if (a2 !== 0.0 && (a2 > 0.0) === (c0 >= 0.0)) {
         const disc = b1 * b1 - 4.0 * a2 * c0;
         if (disc > 0.0) {
           const sq = Math.sqrt(disc);
           const q = b1 >= 0.0 ? -0.5 * (b1 + sq) : -0.5 * (b1 - sq);
           let ta = q / a2, tb = c0 / q;
           if (ta > tb) { const tt = ta; ta = tb; tb = tt; }
-          if (ta > 0.0 && tb < 1.0) {
+          if (c1 === 0.0) {  // exact zero at the end knot: the roots are exactly 1 and c0 / a2 (q / a2 can be 1 + 1 ulp)
+            ta = Math.min(c0 / a2, 1.0);
+            tb = Math.max(c0 / a2, 1.0);
+          }
+          if (ta >= 0.0 && tb <= 1.0) {  // a root exactly at an end belongs to the pair (f = 0 counts as positive)
             t1 = ta;
             t2 = tb;
             ty1 = a2 > 0.0 ? 1 : -1;
+            pair = h * (sq * disc) / (6.0 * a2 * Math.abs(a2));  // h a2 (tb - ta)^3 / 6
           }
         }
       }
+      let ts = 0.0;
       for (let w_ = 0; w_ < 2; w_++) {
         const tt = w_ === 0 ? t1 : t2;
         if (tt < 0.0) continue;
+        if (w_ === 0) acc -= h * chordInt(c0, b1, a2, ts, tt);
+        else acc = pair;
+        ts = tt;
         const x = d[i] + tt * (d[i + 1] - d[i]);
         const y = zs[i] + tt * (zs[i + 1] - zs[i]);
         const mm = ms[i] + tt * (ms[i + 1] - ms[i]);
@@ -376,37 +696,41 @@
         r_x[nr] = x;
         r_y[nr] = y;
         r_L[nr] = la + lb;
-        r_P[nr] = Pi - h * (tt * (c0 + tt * (hb + tt * a3)));
+        r_d[nr] = acc;
         r_s[nr] = sp;
         r_t[nr] = w_ === 0 ? ty1 : -ty1;
         nr++;
+        acc = 0.0;
       }
-      Pi = Pi - h * (c0 + (hb + a3));
+      acc -= h * chordInt(c0, b1, a2, ts, 1.0);
     }
     if (nr === 0) return 0;
-    // extended sequence of path-length extrema: [B_L, mirrors about x = 0, roots, mirrors about x = D, B_R]
-    const ne = 3 * nr + 2;
-    const L0 = Lk[0], LD = Pi;
+    // extended sequence (mirrors about both ends); back-facing roots stay in it
+    extendedSteps(r_d, r_t, nr, acc, dE, ety);
+    // persistence weights x grazing fade (wg), and the external weight of each root's region (eg, clusterSum)
     for (let q = 0; q < nr; q++) {
-      ev[nr - q] = 2.0 * L0 - r_P[q];
-      ety[nr - q] = -r_t[q];
-      ev[nr + 1 + q] = r_P[q];
-      ety[nr + 1 + q] = r_t[q];
-      ev[3 * nr - q] = 2.0 * LD - r_P[q];
-      ety[3 * nr - q] = -r_t[q];
+      if (r_s[q] > 0.0) {
+        const w_ = persistenceWeight(dE, ety, nr, q, kw), e_ = PWE.e, w2_ = PWE.w2;
+        const gz = Math.min(r_s[q] / SIN_EPS, 1.0);
+        wg[q] = w_ * gz;
+        eg[q] = Math.min(e_, EG_BOUND * w_) * gz;
+        mu[q] = w2_ * gz;
+      } else {
+        wg[q] = 0.0;
+        eg[q] = 0.0;
+        mu[q] = 0.0;
+      }
     }
-    ev[0] = 2.0 * L0 - LD;
-    ety[0] = r_t[nr - 1];
-    ev[ne - 1] = 2.0 * LD - L0;
-    ety[ne - 1] = r_t[0];
-    // candidates: front-facing roots, weighted by the fold / end taper
+    // candidates: front-facing roots; the members of a stationary region (extrema within lambda / 2 of path length)
+    // share the region's external weight R in proportion to their weights when their sum S exceeds it
     let nc = 0;
     const hw = (win + 1) * s;
     for (let q = 0; q < nr; q++) {
       const sp = r_s[q];
-      if (sp <= 0.0) continue;
-      const wf = persistenceWeight(ev, ety, ne, nr, q, kw);
-      if (wf <= 0.0) continue;
+      cidx[q] = -1;
+      if (wg[q] <= 0.0) continue;
+      const S = clusterSum(dE, ety, wg, eg, nr, q, kw, mi, mc);
+      const wf = wg[q] * Math.min(1.0, CS.r / S);
       const x = r_x[q];
       // water fraction and roughness: triangle kernel around x, presence-weighted samples
       let aw = 0.0, ar = 0.0, aq = 0.0;
@@ -420,8 +744,11 @@
         ar += wk * (dz * dz);
         aq += wk * wv[i];
       }
-      const wfr = aq / aw;
-      const sig = Math.sqrt(ar / aw);
+      let wfr = 0.0, sig = 0.0;
+      if (aw > 0.0) {  // (the window always holds a terminal sample of presence 1)
+        wfr = aq / aw;
+        sig = Math.sqrt(ar / aw);
+      }
       let gr = 0.0, gi = 0.0;
       if (wfr < 1.0) {
         const tg = 2.0 * Math.PI * sig * sp / lam;
@@ -439,67 +766,27 @@
       const dd1 = x, dd2 = D - x;
       const tpsi = Math.max(sp / Math.sqrt(Math.max(1 - sp * sp, 1e-12)), 1e-9);
       const div = 1.0 / Math.sqrt(1.0 + 2.0 * dd1 * dd2 / (ae * (dd1 + dd2) * tpsi));
-      const sc = div * wf * Math.min(sp / SIN_EPS, 1.0);
-      const cr = gr * sc, ci = gi * sc;
-      const a = Math.hypot(cr, ci) / r_L[q];
-      if (a <= 0.0) continue;
-      c_a[nc] = a;
-      c_cr[nc] = cr;
-      c_ci[nc] = ci;
+      c_cr[nc] = gr * div;
+      c_ci[nc] = gi * div;
+      c_m[nc] = mu[q];
+      c_s[nc] = wf;
       c_r[nc] = q;
-      used[nc] = 0;
+      cidx[q] = nc;
+      fac[nc] = -1.0;
       nc++;
     }
     if (nc === 0) return 0;
-    // strongest maxn + 1 after the leg obstruction (legs evaluated in order of the unobstructed strength)
-    const K1 = maxn + 1;
-    for (let k = 0; k < K1; k++) { t_a[k] = 0.0; t_cr[k] = 0.0; t_ci[k] = 0.0; t_r[k] = 0; }
-    let nt = 0;
-    const r0 = win * s, r1 = (win + 1) * s;
-    for (;;) {
-      let b = -1, ba = -1.0;
-      for (let q = 0; q < nc; q++) {
-        if (!used[q] && c_a[q] > ba) { ba = c_a[q]; b = q; }
-      }
-      if (b < 0) break;
-      if (nt === K1 && ba <= t_a[K1 - 1]) break;
-      used[b] = 1;
-      const q = c_r[b];
-      const x = r_x[q], y = r_y[q];
-      const va = legVmax(z, d, N, s, 0.0, za, x, y, lam, r0, r1);
-      const vb = legVmax(z, d, N, s, D, zb, x, y, lam, r0, r1);
-      let jl = 0.0;
-      if (va > 0.0) jl += J(va - LEG_VSHIFT);  // J(0 - LEG_VSHIFT) == 0: the skip only saves time
-      if (vb > 0.0) jl += J(vb - LEG_VSHIFT);
-      const fac = jl > 0.0 ? Math.pow(10, -jl / 20.0) : 1.0;
-      const a = ba * fac;
-      if (nt === K1 && a <= t_a[K1 - 1]) continue;
-      let k;
-      if (nt < K1) { k = nt; nt++; } else k = K1 - 1;
-      while (k > 0 && t_a[k - 1] < a) {
-        t_a[k] = t_a[k - 1];
-        t_cr[k] = t_cr[k - 1];
-        t_ci[k] = t_ci[k - 1];
-        t_r[k] = t_r[k - 1];
-        k--;
-      }
-      t_a[k] = a;
-      t_cr[k] = c_cr[b] * fac;
-      t_ci[k] = c_ci[b] * fac;
-      t_r[k] = q;
-    }
-    // soft cap at maxn rays
-    const aCut = nt === K1 ? t_a[maxn] : 0.0;
+    // soft cap over stationary regions (legs evaluated there, lazily)
+    const na = capWeights(B, dE, ety, nr, kw, nc, maxn, z, d, N, s, za, zb, lam, win * s, (win + 1) * s);
     let n = 0;
-    for (let k = 0; k < Math.min(nt, maxn); k++) {
-      const den = CAP_BETA * aCut;  // can underflow to 0 for a subnormal aCut
-      let w = den > 0.0 ? Math.min(1.0, (t_a[k] - aCut) / den) : 1.0;
-      w *= wr;
+    for (let k = 0; k < na; k++) {
+      const w = o_w[k] * wr;
       if (w <= 0.0) continue;
-      const q = t_r[k];
+      const b = o_b[k], q = c_r[b];
+      const t = c_s[b] * w;
       out.L[off + n] = r_L[q];
-      out.cr[off + n] = t_cr[k] * w;
-      out.ci[off + n] = t_ci[k] * w;
+      out.cr[off + n] = c_br[b] * t;
+      out.ci[off + n] = c_bi[b] * t;
       out.et[off + n] = Math.atan2(r_y[q] - za, r_x[q]);
       out.er[off + n] = Math.atan2(r_y[q] - zb, D - r_x[q]);
       n++;
@@ -546,12 +833,28 @@
     const K = kh * Math.pow(eps ** 2 + (18.0 * sigma / fGhz) ** 2, 0.5);
     const beta = (1 + 1.6 * K ** 2 + 0.67 * K ** 4) / (1 + 4.5 * K ** 2 + 1.53 * K ** 4);
     const X = 21.88 * beta * Math.pow(fGhz / aKm ** 2, 1.0 / 3.0) * dKm;
-    const fx = X >= 1.6 ? 11.0 + 10.0 * Math.log10(X) - 17.6 * X : -20.0 * Math.log10(X) - 5.6488 * Math.pow(X, 1.425);
+    let fx = 0.0;  // the two branches of F(X) meet at X = 1.6 only to 7e-6 dB: smoothstep blend over [FX_LO, FX_HI]
+    if (X > FX_LO) fx = 11.0 + 10.0 * Math.log10(X) - 17.6 * X;
+    if (X < FX_HI) {
+      const fl = -20.0 * Math.log10(X) - 5.6488 * Math.pow(X, 1.425);
+      if (X > FX_LO) {
+        const u = (X - FX_LO) / (FX_HI - FX_LO), v = u * u * (3.0 - 2.0 * u);
+        fx = fl + v * (fx - fl);
+      } else fx = fl;
+    }
     let gsum = 0.0;
     for (const h of [hte, hre]) {
       const Y = 0.9575 * beta * Math.pow(fGhz ** 2 / aKm, 1.0 / 3.0) * h;
       const B = beta * Y;
-      let g = B > 2 ? 17.6 * Math.sqrt(B - 1.1) - 5.0 * Math.log10(B - 1.1) - 8.0 : 20.0 * Math.log10(B + 0.1 * B ** 3);
+      let g = 0.0;  // the two branches of G(Y) meet at B = 2 only to 0.0175 dB: smoothstep blend over [GB_LO, GB_HI]
+      if (B > GB_LO) g = 17.6 * Math.sqrt(B - 1.1) - 5.0 * Math.log10(B - 1.1) - 8.0;
+      if (B < GB_HI) {
+        const gl = 20.0 * Math.log10(B + 0.1 * B ** 3);
+        if (B > GB_LO) {
+          const u = (B - GB_LO) / (GB_HI - GB_LO), v = u * u * (3.0 - 2.0 * u);
+          g = gl + v * (g - gl);
+        } else g = gl;
+      }
       g = Math.max(g, 2.0 + 20.0 * Math.log10(K));
       gsum += g;
     }
@@ -682,7 +985,7 @@
         smoothProfile(z, d, N, Math.min((m.smooth_n + 0.5) * s, half), F, zs, ms);
         const win = Math.max(Math.floor(m.smooth_n / 2), 1);
         out.n = 1 + smoothReflections(m, z, zs, ms, d, wv, pres, N, s, za, zb, win,
-                                      Math.min(p.max_reflections, MAXR - 1), wr, out, 1);
+                                      Math.min(p.max_reflections, KMAX), wr, out, 1);
       }
     } else {
       out.los = false;
