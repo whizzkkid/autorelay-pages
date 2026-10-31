@@ -1023,10 +1023,19 @@
       const g = Math.pow(10, (elevGainDb(r.et[q], p.hpbw_deg, p.sidelobe_db) + elevGainDb(r.er[q], p.hpbw_deg, p.sidelobe_db)) / 20);
       const s = lam / (4 * Math.PI * L) * g;
       const ar = s * r.cr[q], ai = s * r.ci[q];
+      // phase -2 pi f_k L / c on equally spaced subcarriers: rotate by the per-subcarrier step, re-anchored exactly
+      // every 64 subcarriers (768 cos / sin pairs per ray become 12)
+      const dph = -2 * Math.PI * (p.bandwidth_hz / K) * L / C0, cd = Math.cos(dph), sd = Math.sin(dph);
+      let c = 0.0, sn = 0.0;
       for (let k = 0; k < K; k++) {
-        const f = p.fc_hz + (k - (K - 1) / 2) * p.bandwidth_hz / K;
-        const ph = -2 * Math.PI * f * L / C0;
-        const c = Math.cos(ph), sn = Math.sin(ph);
+        if ((k & 63) === 0) {
+          const ph = -2 * Math.PI * (p.fc_hz + (k - (K - 1) / 2) * p.bandwidth_hz / K) * L / C0;
+          c = Math.cos(ph); sn = Math.sin(ph);
+        } else {
+          const c1 = c * cd - sn * sd;
+          sn = sn * cd + c * sd;
+          c = c1;
+        }
         hr[k] += ar * c - ai * sn;
         hi[k] += ar * sn + ai * c;
       }
@@ -1082,9 +1091,10 @@
     const r = rays(m, src.x, src.y, src.h, rx.x, rx.y, rx.h);
     const g = channelGain(m, r, scratch || new Float64Array(m.p.n_sub));
     const beta = m.p.eesm_beta;
+    const fwd = eesmDb(g, budgetDb(m.p, txSrc, cab), beta, m.buf.s);
     return {
-      fwd: eesmDb(g, budgetDb(m.p, txSrc, cab), beta, m.buf.s),
-      rev: eesmDb(g, budgetDb(m.p, txRx, cab), beta, m.buf.s),
+      fwd,
+      rev: txRx === txSrc ? fwd : eesmDb(g, budgetDb(m.p, txRx, cab), beta, m.buf.s),  // same power: same e-SNR
       los: r.los, diff_db: r.diff_db, n: r.n, n_main: mainRays(r),
     };
   }
@@ -1380,9 +1390,11 @@
     for (const n of NODE_NAMES) rel[n] = relayLinks(m, nodes[n], s.heights[n], s.tx[n], grid, 0, grid.x.length, s.heights.R, s.tx.R,
                                                  cableDb(m.p, n) + cableDb(m.p, "R"));
     const g = relayGrid(tab, rel, p);
-    const cands = pickCandidates(grid, relayScore(g), p.top_k, g.margin);
+    const refineOn = p.fine_m && p.fine_m < grid.step;
+    // with refinement the fine_top_k best cells seed the fine windows, otherwise the top_k best are listed
+    const cands = pickCandidates(grid, relayScore(g), refineOn ? (p.fine_top_k || p.top_k) : p.top_k, g.margin);
     let xy = [grid.x[cands[0]], grid.y[cands[0]]], fine = null;
-    if (p.fine_m && p.fine_m < grid.step && cands.length) {  // TerrainPlanner.refine
+    if (refineOn && cands.length) {  // TerrainPlanner.refine
       const fg = localGrid(m, cands.map((i) => [grid.x[i], grid.y[i]]), p.fine_m, p.fine_radius_m || 1.5 * grid.step, p.border_m, !!p.relay_on_water);
       if (fg.x.length) {
         const frel = {};
@@ -1390,7 +1402,7 @@
                                                       cableDb(m.p, n) + cableDb(m.p, "R"));
         const fgr = relayGrid(tab, frel, p), picks = refinePick(fg, relayScore(fgr), fgr.margin);
         xy = [fg.x[picks[0]], fg.y[picks[0]]];
-        fine = { grid: fg, rate: fgr.rate, usesRelay: fgr.usesRelay, cands: picks };
+        fine = { grid: fg, rate: fgr.rate, usesRelay: fgr.usesRelay, cands: picks.slice(0, p.top_k) };
       }
     }
     const fin = finalTable(m, tab, nodes, s, xy);

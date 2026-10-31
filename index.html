@@ -818,7 +818,7 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
       Object.assign(prev, { gen: c.gen, xy, fine: { step: c.step, n: c.grid.x.length, picks: picks.map((i) => [c.grid.x[i], c.grid.y[i]]) } });
       done = `계산 완료 (${prev.step} m 격자 ${prev.grid.x.length.toLocaleString("ko-KR")}곳 + 후보 주변 ${c.step} m 간격 ${c.grid.x.length.toLocaleString("ko-KR")}곳)`;
     } else {
-      const cands = E.pickCandidates(c.grid, E.relayScore(g), P.top_k, g.margin), b = cands[0];
+      const cands = E.pickCandidates(c.grid, E.relayScore(g), P.fine_top_k || P.top_k, g.margin), b = cands[0];  // seeds of the fine windows
       xy = [c.grid.x[b], c.grid.y[b]];
       state.relay = { gen: c.gen, step: c.step, grid: c.grid, rate: g.rate, usesRelay: g.usesRelay, reach: g.reach, cands, xy, fine: null };
       done = `계산 완료 (${c.step} m 격자, 후보 ${c.grid.x.length.toLocaleString("ko-KR")}곳)`;
