@@ -366,8 +366,8 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
             <div class="slider"><input id="hR" type="range" min="2" max="150" step="1" value="10"><output id="hRout" for="hR">10 m</output></div>
             <span class="lab">수면 위 드론</span><div class="seg" id="wseg"></div>
             <h3>장비·링크 예산</h3>
-            <label class="lab" for="sens">수신감도</label>
-            <div class="ctl"><input class="num" id="sens" type="number" step="1" inputmode="decimal"><span class="unit">dBm</span></div>
+            <label class="lab" for="nf">잡음지수</label>
+            <div class="ctl"><input class="num" id="nf" type="number" step="0.5" min="0" inputmode="decimal"><span class="unit">dB</span><span class="unit" id="nfref"></span></div>
             <label class="lab" for="beta">EESM β</label>
             <div class="ctl"><input class="num" id="beta" type="number" step="0.1" min="0.1" inputmode="decimal"></div>
             <span class="lab">케이블 손실</span>
@@ -437,7 +437,7 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
     onWater: null,    // relay (drone) candidates over water (null: the region config's)
     snr: null,        // edited UL MCS thresholds [dB] of the airtime table (null: config)
     beta: null,       // EESM beta (null: config)
-    sens: null,       // receiver sensitivity [dBm] (null: config)
+    nf: null,         // receiver noise figure [dB] (null: config); noise = kTB + NF
     cab: null,        // cable loss per node [dB] (null: config)
     fade: null,       // fade margin [dB] (null: config)
   };
@@ -797,7 +797,7 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
                      pts: fineStage ? { x: grid.x.slice(i0, i1), y: grid.y.slice(i0, i1) } : undefined,
                      node: nm[n], hNode: s.heights[n], txNode: s.tx[n], hR: s.heights.R, txR: s.tx.R, onWater: state.onWater,
                      cab: E.cableDb(P, n) + E.cableDb(P, "R"),
-                     radio: { eesm_beta: P.eesm_beta, rx_sensitivity_dbm: P.rx_sensitivity_dbm, fade_margin_db: P.fade_margin_db } });
+                     radio: { eesm_beta: P.eesm_beta, rx_sensitivity_dbm: P.rx_sensitivity_dbm, noise_figure_db: P.noise_figure_db, fade_margin_db: P.fade_margin_db } });
         collect.total++;
       }
     }
@@ -1108,8 +1108,9 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
     };
     const redo = () => { state.dirty = true; computeLive(); render(); scheduleRelay(); };
     mk($("txseg"), TXS.map((v) => [v, v + " dBm"]), state.tx, (v) => { state.tx = v; redo(); });
-    for (const [id, v] of [["sens", P.rx_sensitivity_dbm], ["beta", P.eesm_beta]]) if (document.activeElement !== $(id)) $(id).value = v == null ? "" : String(v);
-    $("sens").disabled = P.rx_sensitivity_dbm == null;
+    for (const [id, v] of [["nf", P.noise_figure_db], ["beta", P.eesm_beta]]) if (document.activeElement !== $(id)) $(id).value = v == null ? "" : String(v);
+    $("nf").disabled = P.rx_sensitivity_dbm != null;  // a region that still gives a sensitivity uses it instead
+    $("nfref").textContent = `잡음 ${E.noiseDbm(P).toFixed(1)} dBm`;
     for (const [id, n] of [["cabBS", "BS"], ["cabMS", "MS1"], ["cabR", "R"]]) if (document.activeElement !== $(id)) $(id).value = String(E.cableDb(P, n));
     const fd = P.fade_margin_db || 0;
     if (document.activeElement !== $("fade")) $("fade").value = String(fd);
@@ -1157,7 +1158,7 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
       P[key] = v; state[stateKey] = v; state.dirty = true; computeLive(); render(); scheduleRelay();
     });
   }
-  radioInput("sens", "rx_sensitivity_dbm", "sens", (v) => v > -150 && v < 0);
+  radioInput("nf", "noise_figure_db", "nf", (v) => v >= 0 && v <= 40);
   radioInput("beta", "eesm_beta", "beta", (v) => v > 0);
   for (const [id, names] of [["cabBS", ["BS"]], ["cabMS", ["MS1", "MS2"]], ["cabR", ["R"]]]) {
     $(id).addEventListener("change", () => {
@@ -1371,7 +1372,7 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
   function command() {
     if (!allPlaced()) return "";
     const ll = (n) => lonlat(state.pos[n].u, state.pos[n].v);
-    const extra = (state.beta !== null ? ` --eesm-beta ${P.eesm_beta}` : "") + (state.sens !== null ? ` --rx-sensitivity ${P.rx_sensitivity_dbm}` : "") +
+    const extra = (state.beta !== null ? ` --eesm-beta ${P.eesm_beta}` : "") + (state.nf !== null ? ` --noise-figure ${P.noise_figure_db}` : "") +
       (state.fade !== null ? ` --fade-margin ${P.fade_margin_db}` : "") +
       (state.cab !== null ? ` --cable-loss BS=${E.cableDb(P, "BS")},MS1=${E.cableDb(P, "MS1")},MS2=${E.cableDb(P, "MS2")},R=${E.cableDb(P, "R")}` : "");
     return `python -m autorelay plan ${REGION.config} --tx-power ${state.tx}${extra} \\\n` +
@@ -1458,7 +1459,7 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
     const st = $("status"); $("save").disabled = true;
     const nodes = {};
     for (const n of NODES) { const p = state.pos[n.key], ll = lonlat(p.u, p.v); nodes[n.key] = { lat: ll.lat, lon: ll.lon, u: p.u, v: p.v, ground_m: groundAt(p.u, p.v), pluscode: plusCode(ll.lat, ll.lon) }; }
-    const cur = current(), doc = { nodes, tx_power_dbm: state.tx, relay_height_m: state.hR, eesm_beta: P.eesm_beta, rx_sensitivity_dbm: P.rx_sensitivity_dbm,
+    const cur = current(), doc = { nodes, tx_power_dbm: state.tx, relay_height_m: state.hR, eesm_beta: P.eesm_beta, noise_figure_db: P.noise_figure_db,
                                  cable_loss_db: P.cable_loss_db, fade_margin_db: P.fade_margin_db || 0, saved_at: new Date().toISOString() };
     if (state.live) doc.without_relay = { topology: state.live.base.label, description: state.live.base.description, rate_bps: state.live.base.rate_bps };
     if (cur && state.relayMode === "auto" && !cur.final.usesRelay) {  // no spot gains from the drone: no position to record
@@ -1516,7 +1517,7 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
     P.relay_on_water = state.onWater;
     if (state.tx === null) state.tx = TXS.includes(P.tx_power_dbm.BS) ? P.tx_power_dbm.BS : TXS[0];
     if (state.beta !== null) P.eesm_beta = state.beta;
-    if (state.sens !== null && P.rx_sensitivity_dbm != null) P.rx_sensitivity_dbm = state.sens;
+    if (state.nf !== null) P.noise_figure_db = state.nf;
     if (state.cab !== null) P.cable_loss_db = Object.assign({}, state.cab);
     if (state.fade !== null) P.fade_margin_db = state.fade;
     if (P.airtime) { if (state.snr) P.airtime.snr_db = state.snr.slice(); }
@@ -1565,7 +1566,7 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
     }
     if (TXS.includes(d.tx_power_dbm) && d.tx_power_dbm !== state.tx) { state.tx = d.tx_power_dbm; moved = true; }
     if (typeof d.eesm_beta === "number" && d.eesm_beta > 0 && d.eesm_beta !== P.eesm_beta) { P.eesm_beta = state.beta = d.eesm_beta; moved = true; }
-    if (typeof d.rx_sensitivity_dbm === "number" && P.rx_sensitivity_dbm != null && d.rx_sensitivity_dbm !== P.rx_sensitivity_dbm) { P.rx_sensitivity_dbm = state.sens = d.rx_sensitivity_dbm; moved = true; }
+    if (typeof d.noise_figure_db === "number" && d.noise_figure_db >= 0 && d.noise_figure_db <= 40 && d.noise_figure_db !== P.noise_figure_db) { P.noise_figure_db = state.nf = d.noise_figure_db; moved = true; }
     if (typeof d.fade_margin_db === "number" && d.fade_margin_db >= 0 && d.fade_margin_db <= 15 && d.fade_margin_db !== (P.fade_margin_db || 0)) { P.fade_margin_db = state.fade = d.fade_margin_db; moved = true; }
     if (d.cable_loss_db && typeof d.cable_loss_db === "object" && ["BS", "MS1", "MS2", "R"].every((n) => typeof d.cable_loss_db[n] === "number")
         && ["BS", "MS1", "MS2", "R"].some((n) => d.cable_loss_db[n] !== E.cableDb(P, n))) {
