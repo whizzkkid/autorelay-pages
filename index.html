@@ -1314,6 +1314,7 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
     return `가시선 ·\u00a0${i.n_main != null ? i.n_main : i.n}개\u00a0경로`;  // direct + reflections with |c| >= 0.1
   }
   const fcost = (w) => (isFinite(w) ? String(+w.toFixed(2)) : "∞");  // 90, 22.5, 28.6
+  const linkEnd = (n) => (n === "R" ? relayPoint() : state.pos[n]);  // map position [px] of a link end
   function renderTable() {
     const t = $("tab"); t.replaceChildren();
     if (!state.live) return;
@@ -1324,7 +1325,7 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
     const tbl = !!P.airtime, mean = P.traffic === "mean";
     const pw = tbl && mean && P.tx_power_min_dbm != null;
     const th2 = (a, b, cls) => { const c = cell("th", a, cls); if (b) c.append(cell("small", b, "sub")); return c; };
-    head.append(th2("링크", "경로"), th2("DL", "dB"), th2("UL", tbl ? "dB · MCS" : "dB"),
+    head.append(th2("링크", "거리 · 경로"), th2("DL", "dB"), th2("UL", tbl ? "dB · MCS" : "dB"),
                 ...(tbl && mean ? [th2("AH", "dB · MCS · 비용")] : [th2("비용", "")]), ...(pw ? [th2("필요 출력", "dBm", "opt")] : []));
     const thead = document.createElement("thead"); thead.append(head); t.append(thead);
     const tb = document.createElement("tbody");
@@ -1334,8 +1335,11 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
       const [a, b] = dlOrder(topo, a0, b0);  // a -> b is DL, b -> a is UL
       const x = tab[a + ">" + b], y = tab[b + ">" + a];
       const r = document.createElement("tr"); r.className = u ? "used" : "unused";
+      const A = linkEnd(a), B = linkEnd(b);  // horizontal distance between the two nodes
+      const km = A && B ? Math.hypot(A.u - B.u, A.v - B.v) * MPP / 1000 : NaN;
       const nm = cell("td", u ? `${a} → ${b}` : `${a} ↔ ${b}`, "name");
-      nm.append(cell("span", (u ? "사용 ·\u00a0" : "") + linkState(info[a + ">" + b]), "st"));
+      nm.append(cell("span", (isFinite(km) ? `${km.toFixed(2)}\u00a0km ·\u00a0` : "") + (u ? "사용 ·\u00a0" : "")
+                     + linkState(info[a + ">" + b]), "st"));
       const w = E.edgeWeight(tab, a, b, P.traffic, E.costOf(P));
       const xm = mean ? (x + y) / 2 : y;
       const ulk = tbl ? E.tableLevel(P.airtime, xm) : 0;  // cost level (AH e-SNR)
