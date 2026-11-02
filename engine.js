@@ -1154,8 +1154,8 @@
              usesRelay: links.some(([p, c]) => p === RELAY || c === RELAY) };
   }
 
-  /** Trees rooted at BS in the order of autorelay.topology.enumerate_topologies. */
-  function enumerateTrees(withRelay) {
+  /** Trees rooted at BS in the order of autorelay.topology.enumerate_topologies (deeper than maxHops left out). */
+  function enumerateTrees(withRelay, maxHops) {
     const nonRoot = [...MS_NODES, ...(withRelay ? [RELAY] : [])], all = ["BS", ...nonRoot], out = [];
     const rec = (k, par) => {
       if (k === nonRoot.length) {
@@ -1164,6 +1164,7 @@
           for (let cur = n; cur !== "BS"; cur = par[cur]) { if (seen.has(cur)) return; seen.add(cur); }
         }
         if (withRelay && !Object.values(par).includes(RELAY)) return;
+        if (maxHops != null && nonRoot.some((n) => depthIn(par, n) > maxHops)) return;  // deeper than the network allows
         out.push(Object.assign({}, par));
         return;
       }
@@ -1176,7 +1177,7 @@
 
   /** Every tree (star, MS relaying, relay variants) with its Dijkstra cost and rate, best first (rank_trees). */
   function rankTrees(esnr, p, withRelay) {
-    const trees = [...enumerateTrees(false), ...(withRelay ? enumerateTrees(true) : [])];
+    const trees = [...enumerateTrees(false, p.max_hops), ...(withRelay ? enumerateTrees(true, p.max_hops) : [])];
     const out = trees.map((par) => {
       let total = 0.0;
       for (const ms of MS_NODES) for (let n = ms; n !== "BS"; n = par[n]) total += edgeWeight(esnr, par[n], n, p.traffic, costOf(p));
@@ -1189,7 +1190,10 @@
 
   function decide(esnr, p, withRelay) {
     const nodes = ["BS", ...MS_NODES, ...(withRelay ? [RELAY] : [])];
-    const { dist, parent } = dijkstra(nodes, esnr, p.traffic, costOf(p));
+    let { dist, parent } = dijkstra(nodes, esnr, p.traffic, costOf(p));
+    if (p.max_hops != null && MS_NODES.some((m) => isFinite(dist[m]) && depthIn(parent, m) > p.max_hops)) {
+      ({ dist, parent } = hopLimited(esnr, p, withRelay));  // autorelay.topology._hop_limited
+    }
     const routes = {};  // every radio's shortest path to the control station (BS)
     for (const n of nodes) {
       if (n !== "BS" && !isFinite(dist[n])) { routes[n] = { path: null, cost: Infinity }; continue; }
@@ -1216,6 +1220,62 @@
     MS1: [["BS", "MS1"], ["BS", "MS2", "MS1"], ["BS", "R", "MS1"], ["BS", "MS2", "R", "MS1"], ["BS", "R", "MS2", "MS1"]],
     MS2: [["BS", "MS2"], ["BS", "MS1", "MS2"], ["BS", "R", "MS2"], ["BS", "MS1", "R", "MS2"], ["BS", "R", "MS1", "MS2"]],
   };
+  function depthIn(parent, n) { let d = 0; while (n !== "BS") { n = parent[n]; d++; } return d; }
+  /** Paths per MS within maxHops (_ms_paths), with or without the relay. */
+  function msPaths(withRelay, maxHops) {
+    const out = {};
+    for (const m of MS_NODES) out[m] = MS_PATHS[m].filter((q) => (withRelay || !q.includes(RELAY)) && (maxHops == null || q.length - 1 <= maxHops));
+    return out;
+  }
+  /** Both MS paths fit one tree: every node keeps a single parent (_consistent). */
+  function consistentPaths(p1, p2) {
+    const par = {};
+    for (const q of [p1, p2]) for (let k = 0; k < q.length - 1; k++) {
+      if (q[k + 1] in par) { if (par[q[k + 1]] !== q[k]) return false; } else par[q[k + 1]] = q[k];
+    }
+    return true;
+  }
+  const PATH_OK = {};  // consistency matrix per (relay, maxHops)
+  function pathOk(paths, key) {
+    if (!PATH_OK[key]) PATH_OK[key] = paths.MS1.map((q1) => paths.MS2.map((q2) => consistentPaths(q1, q2)));
+    return PATH_OK[key];
+  }
+  /** Path index per MS from the path costs c1, c2 (best_ms_paths for one table): the per-MS minimum, or, when the two
+   *  contradict each other under the hop limit, the pair that fits one tree (most MSs connected, then the smallest sum). */
+  function choosePaths(c1, c2, ok, limited) {
+    let i1 = 0, i2 = 0;
+    for (let i = 1; i < c1.length; i++) if (c1[i] < c1[i1]) i1 = i;
+    for (let j = 1; j < c2.length; j++) if (c2[j] < c2[i2]) i2 = j;
+    if (!limited || !isFinite(c1[i1]) || !isFinite(c2[i2]) || ok[i1][i2]) return [i1, i2];
+    let sb = -Infinity, b1 = i1, b2 = i2;
+    for (let i = 0; i < c1.length; i++) for (let j = 0; j < c2.length; j++) {
+      const f1 = isFinite(c1[i]), f2 = isFinite(c2[j]);
+      if (f1 && f2 && !ok[i][j]) continue;
+      const sc = ((f1 ? 1 : 0) + (f2 ? 1 : 0)) * 1e12 - (f1 ? c1[i] : 0) - (f2 ? c2[j] : 0);
+      if (sc > sb) { sb = sc; b1 = i; b2 = j; }
+    }
+    return [b1, b2];
+  }
+  /** dist/parent of the best tree within p.max_hops for a scalar table (autorelay.topology._hop_limited). */
+  function hopLimited(esnr, p, withRelay) {
+    const paths = msPaths(withRelay, p.max_hops), cost = costOf(p), w = (a, b) => edgeWeight(esnr, a, b, p.traffic, cost);
+    const pc = (q) => { let c = 0.0; for (let k = 0; k < q.length - 1; k++) c += w(q[k], q[k + 1]); return c; };
+    const c = { MS1: paths.MS1.map(pc), MS2: paths.MS2.map(pc) };
+    const [i1, i2] = choosePaths(c.MS1, c.MS2, pathOk(paths, (withRelay ? "r" : "n") + p.max_hops), true);
+    const nodes = ["BS", ...MS_NODES, ...(withRelay ? [RELAY] : [])], dist = {}, parent = {};
+    for (const n of nodes) { dist[n] = Infinity; parent[n] = null; }
+    dist.BS = 0.0;
+    for (const [m, ix] of [["MS1", i1], ["MS2", i2]]) {
+      if (!isFinite(c[m][ix])) continue;
+      const q = paths[m][ix]; let acc = 0.0;
+      for (let k = 0; k < q.length - 1; k++) { acc += w(q[k], q[k + 1]); parent[q[k + 1]] = q[k]; dist[q[k + 1]] = Math.min(dist[q[k + 1]], acc); }
+    }
+    if (withRelay && parent[RELAY] === null) {  // relay serves nobody: its own direct link, for the routes table
+      const d = w("BS", RELAY);
+      if (isFinite(d)) { dist[RELAY] = d; parent[RELAY] = "BS"; }
+    }
+    return { dist, parent };
+  }
 
   /** Relay at every candidate: tab = scalar e-SNR among BS/MS1/MS2, rel[n] = {to: Float32Array, from: Float32Array}. */
   function relayGrid(tab, rel, p) {
@@ -1226,23 +1286,22 @@
     const cost = costOf(p), w = (a, b) => edgeWeight(e, a, b, p.traffic, cost);
     const fixed = {};
     for (const a of NODE_NAMES) for (const b of NODE_NAMES) if (a !== b) fixed[a + ">" + b] = w(a, b);
+    const paths = msPaths(true, p.max_hops), limited = p.max_hops != null, ok = pathOk(paths, "r" + p.max_hops);
+    const pc = (q) => {
+      let c = 0.0;
+      for (let k = 0; k < q.length - 1; k++) { const key = q[k] + ">" + q[k + 1]; c += key in fixed ? fixed[key] : w(q[k], q[k + 1]); }
+      return c;
+    };
     for (let i = 0; i < N; i++) {
       for (const n of NODE_NAMES) { e[n + ">R"] = rel[n].to[i]; e["R>" + n] = rel[n].from[i]; }
+      const c1 = paths.MS1.map(pc), c2 = paths.MS2.map(pc);
+      const [i1, i2] = choosePaths(c1, c2, ok, limited);
+      best.MS1[i] = i1; best.MS2[i] = i2;
       let total = 0.0, ur = 0, nr = 0;
-      for (const ms of MS_NODES) {
-        let bc = Infinity, bi = 0;
-        MS_PATHS[ms].forEach((path, pi) => {
-          let c = 0.0;
-          for (let k = 0; k < path.length - 1; k++) {
-            const key = path[k] + ">" + path[k + 1];
-            c += key in fixed ? fixed[key] : w(path[k], path[k + 1]);
-          }
-          if (c < bc) { bc = c; bi = pi; }
-        });
-        best[ms][i] = bi;
+      for (const [ms, bc, bi] of [["MS1", c1[i1], i1], ["MS2", c2[i2], i2]]) {
         if (!isFinite(bc)) continue;  // this MS has no valid path to BS
         total += bc; nr++;
-        if (MS_PATHS[ms][bi].includes(RELAY)) ur = 1;
+        if (paths[ms][bi].includes(RELAY)) ur = 1;
       }
       reach[i] = nr;
       rate[i] = nr ? rateScale(p) / total : 0;  // per connected MS
@@ -1250,7 +1309,7 @@
       // weakest e-SNR over the relay links in use (tie-break between candidates of equal rate)
       let mg = Infinity;
       for (const ms of MS_NODES) {
-        const path = MS_PATHS[ms][best[ms][i]];
+        const path = paths[ms][best[ms][i]];
         if (path.some((n, k) => k < path.length - 1 && !isFinite(w(n, path[k + 1])))) continue;
         for (let k = 0; k < path.length - 1; k++) {
           if (path[k] === RELAY || path[k + 1] === RELAY) mg = Math.min(mg, e[path[k] + ">" + path[k + 1]], e[path[k + 1] + ">" + path[k]]);
@@ -1411,7 +1470,7 @@
   }
 
   const api = { cableDb, noiseDbm, tableLevel, costOf, rateScale, edgeWeight, nodeTable, relayLinks, finalTable, plan, makeModel, rays, channelGain, eesmDb, budgetDb, linkEsnr, groundAt, bullington, decide, dijkstra, relayGrid,
-                treeFromPaths, relayScore, BIG, rankTrees, enumerateTrees, candidateGrid, localGrid, refinePick, pickCandidates, MS_PATHS, NODE_NAMES, RELAY };
+                treeFromPaths, relayScore, BIG, rankTrees, enumerateTrees, candidateGrid, localGrid, refinePick, pickCandidates, MS_PATHS, msPaths, NODE_NAMES, RELAY };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.AutoRelayEngine = api;
 })(typeof self !== "undefined" ? self : this);
