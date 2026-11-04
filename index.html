@@ -105,6 +105,7 @@ select, .field input[type="search"] {
 }
 .pin.relay i { border-radius: 3px; transform: rotate(45deg); }
 .pin.auto { pointer-events: none; }
+.pin.ghost { opacity: 0.55; }  /* BS page: the best spot, shown next to a BS placed by hand */
 .pvchip { position: absolute; left: 8px; top: 8px; z-index: 5; display: flex; align-items: center; gap: 8px; max-width: calc(100% - 16px);
   font: 500 .78rem/1.3 var(--font-body); color: var(--accent-ink); background: var(--accent); border-radius: 4px; padding: 4px 4px 4px 10px;
   box-shadow: 0 0 0 1px rgba(0,0,0,.45), 0 1px 4px rgba(0,0,0,.3); cursor: default; }
@@ -419,6 +420,20 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
   const E = window.AutoRelayEngine;
   const $ = (id) => document.getElementById(id);
   if (!E) { $("statetext").textContent = "계산 엔진을 불러오지 못했습니다. 새로고침해 주세요."; return; }
+  // BS placement page (bs/ of the site, and its own artifact): this page with window.AUTORELAY_MODE = "bs". MS1 / MS2 are
+  // placed, the BS position is searched over the map (no relay); a BS placed by hand is shown next to the best spot.
+  const BSM = window.AUTORELAY_MODE === "bs";
+  if (BSM) {
+    document.title = $("h1").textContent = "AutoRelay BS 위치 선정";
+    document.querySelector("header .sub").textContent = "MS1·MS2를 고르고 지도를 눌러 찍거나, 찍힌 점을 끌어서 옮기세요. "
+      + "BS 위치는 손을 떼면 다시 찾습니다. BS를 고르고 지도를 누르면 그 위치를 최적 위치와 비교합니다.";
+    $("relbtn").hidden = true;
+    $("heatbtn").textContent = "BS 후보";
+    $("legend").firstElementChild.textContent = "BS를 두면 MS당 전송률";
+    document.querySelector('label[for="hR"]').textContent = "BS 안테나 높이";
+    $("wseg").hidden = $("wseg").previousElementSibling.hidden = true;  // 수면 위 드론: a BS stands on the ground
+    $("cabR").hidden = document.querySelector('label[for="cabR"]').hidden = true;
+  }
   // region-dependent (set by loadRegion)
   let REGION = null, TD = null, W = 1, H = 1, MPP = 1, GEO = null, P = null, model = null, NPX = 1;
   let NODES = [];
@@ -426,6 +441,7 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
   const FADES = [[0, "없음 0"], [7, "고정 7"], [10, "이동 10"]];  // dB: none, fixed sites (P.1546 5.5 dB x 1.28), mobile MS (+3 dB)
   const state = {
     sel: "BS", pos: {}, tx: null, hR: 10, relayMode: "auto", relayManual: null,
+    bsManual: false,  // BS page: the BS was placed by hand (else it follows the best spot of the search)
     dirty: false, savedAt: null, heat: true,
     live: null,       // {tab, info, base}
     relay: null,      // {step, grid, rate, usesRelay, best, cands, xy, final_table, final}
@@ -650,7 +666,7 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
       const pic = clientToPic(e.clientX, e.clientY);
       if (pic.u >= 0 && pic.u < W && pic.v >= 0 && pic.v < H) placeSelected(pic.u, pic.v);
     } else if (gesture.kind === "pin" && gesture.moved) {
-      scheduleRelay();
+      if (!(BSM && gesture.key === "BS")) scheduleRelay();
     }
     if (ptrs.size === 0) gesture = null;
     else if (gesture.kind === "pinch") gesture = null;
@@ -669,7 +685,7 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
     if (state.sel === "R") { state.relayMode = "manual"; setUseRelay(true); moveNode("R", u, v, false); return; }
     if (onWater(u, v)) { groundOnly(state.sel); return; }
     moveNode(state.sel, u, v, false);
-    const next = NODES.find((n) => !state.pos[n.key]);
+    const next = NODES.find((n) => !state.pos[n.key] && !(BSM && n.key === "BS"));
     if (next) state.sel = next.key;
     renderNodes();
   }
@@ -681,16 +697,24 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
     if (key !== "R" && onWater(u, v)) { groundOnly(key); return; }  // a drag stops at the shore
     if (key === "R") state.relayManual = { u, v };
     else state.pos[key] = { u, v };
+    const byHand = BSM && key === "BS";  // BS page: a BS moved by hand stays there; the search does not depend on it
+    if (byHand) state.bsManual = true;
     state.dirty = true;
     renderPins();
     if (!liveRaf) liveRaf = requestAnimationFrame(() => { liveRaf = 0; computeLive(); render(); });
-    if (!dragging && key !== "R") scheduleRelay();
+    if (!dragging && key !== "R" && !byHand) scheduleRelay();
+  }
+  function toBestBs() {  // BS page: the BS back at the best spot of the last search (none when no spot connects an MS)
+    if (state.relay && !state.relay.none) state.pos.BS = fromM(state.relay.xy[0], state.relay.xy[1]); else delete state.pos.BS;
   }
   const allPlaced = () => NODES.every((n) => state.pos[n.key]);
+  const msPlaced = () => NODES.every((n) => (BSM && n.key === "BS") || state.pos[n.key]);  // what the search needs
   function nodesM() { const o = {}; for (const n of NODES) o[n.key] = toM(state.pos[n.key].u, state.pos[n.key].v); return o; }
+  function msM() { const o = {}; for (const k of ["MS1", "MS2"]) o[k] = toM(state.pos[k].u, state.pos[k].v); return o; }
   function settings() {
     const tx = { BS: state.tx, MS1: state.tx, MS2: state.tx, R: state.tx };
-    return { heights: Object.assign({}, P.heights_m, { R: state.hR }), tx };
+    // the height slider is the drone's on the relay page and the BS antenna's on the BS page
+    return { heights: Object.assign({}, P.heights_m, BSM ? { BS: state.hR } : { R: state.hR }), tx };
   }
   function computeLive() {
     state.preview = null;  // a compared tree is a momentary look: new positions or conditions show the real plan again
@@ -698,6 +722,13 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
     const nm = nodesM(), s = settings();
     const { tab, info } = E.nodeTable(model, nm, s);
     state.live = { tab, info, base: E.decide(tab, P, false) };
+    if (BSM) {  // BS page: next to a hand-placed BS, the plan at the best spot for the current MS positions
+      if (state.bsManual && state.relay && state.relay.xy) {
+        const t2 = E.nodeTable(model, Object.assign({}, nm, { BS: { x: state.relay.xy[0], y: state.relay.xy[1] } }), s);
+        Object.assign(state.relay, { final_table: t2.tab, info: t2.info, final: E.decide(t2.tab, P, false) });
+      }
+      return;
+    }
     if (state.relayMode === "manual" && state.relayManual) {
       const r = toM(state.relayManual.u, state.relayManual.v);
       const info = {}, ft = E.finalTable(model, tab, nm, s, [r.x, r.y], info);
@@ -767,48 +798,51 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
     relayTimer = setTimeout(() => runRelay([100, P.grid_m, { fine: P.fine_m }]), 120);
   }
   function runRelay(steps) {
-    if (!allPlaced()) {
-      const left = NODES.filter((n) => !state.pos[n.key]).map((n) => n.key);
+    if (!(BSM ? msPlaced() : allPlaced())) {
+      const left = NODES.filter((n) => !state.pos[n.key] && !(BSM && n.key === "BS")).map((n) => n.key);
       $("statetext").textContent = `${left.join(", ")}를 지도에 찍어 주세요`; $("prog").style.width = "0%";
       return;
     }
     gen++;
     queue = [];
-    const nm = nodesM(), s = settings();
+    const nm = BSM ? msM() : nodesM(), s = settings();
+    const ow = BSM ? false : state.onWater;  // BS candidates stand on the ground only
     const fineStage = typeof steps[0] === "object";
     let step, grid;
     if (fineStage) {  // around every candidate of the finished grid stage (TerrainPlanner.refine)
       const prev = state.relay;
       if (!prev || !prev.cands || !steps[0].fine || steps[0].fine >= prev.step) { runRelay(steps.slice(1)); return; }
       step = steps[0].fine;
-      grid = E.localGrid(model, prev.cands.map((i) => [prev.grid.x[i], prev.grid.y[i]]), step, P.fine_radius_m || 1.5 * prev.step, P.border_m, state.onWater);
+      grid = E.localGrid(model, prev.cands.map((i) => [prev.grid.x[i], prev.grid.y[i]]), step, P.fine_radius_m || 1.5 * prev.step, P.border_m, ow);
       if (!grid.x.length) { runRelay(steps.slice(1)); return; }
     } else {
-      step = steps[0]; grid = E.candidateGrid(model, step, P.border_m, state.onWater);
+      step = steps[0]; grid = E.candidateGrid(model, step, P.border_m, ow);
     }
     const N = grid.x.length;
     const chunk = Math.max(400, Math.ceil(N / (pool.length * 6 || 12)));
     collect = { gen, step, fine: fineStage, rest: steps.slice(1), grid, rel: {}, total: 0, left: 0, nm, s };
-    for (const n of E.NODE_NAMES) {
+    const far = BSM ? "BS" : "R";  // the node standing at the candidate: the drone, or the BS on the BS page
+    for (const n of (BSM ? ["MS1", "MS2"] : E.NODE_NAMES)) {
       collect.rel[n] = { to: new Float32Array(N), from: new Float32Array(N) };
       for (let i0 = 0; i0 < N; i0 += chunk) {
         const i1 = Math.min(N, i0 + chunk);
         queue.push({ type: "relay", job: ++jobSeq, gen, name: n, step, border: P.border_m, i0, i1,
                      pts: fineStage ? { x: grid.x.slice(i0, i1), y: grid.y.slice(i0, i1) } : undefined,
-                     node: nm[n], hNode: s.heights[n], txNode: s.tx[n], hR: s.heights.R, txR: s.tx.R, onWater: state.onWater,
-                     cab: E.cableDb(P, n) + E.cableDb(P, "R"),
+                     node: nm[n], hNode: s.heights[n], txNode: s.tx[n], hR: s.heights[far], txR: s.tx[far], onWater: ow,
+                     cab: E.cableDb(P, n) + E.cableDb(P, far),
                      radio: { eesm_beta: P.eesm_beta, rx_sensitivity_dbm: P.rx_sensitivity_dbm, noise_figure_db: P.noise_figure_db, fade_margin_db: P.fade_margin_db } });
         collect.total++;
       }
     }
     collect.left = collect.total;
-    $("statetext").textContent = fineStage ? `드론 위치 정밀 계산 중 (후보 주변 ${step} m 간격, ${N.toLocaleString("ko-KR")}곳)`
-      : `중계 위치 계산 중 (${step} m 격자, 후보 ${N.toLocaleString("ko-KR")}곳)`;
+    $("statetext").textContent = fineStage ? `${BSM ? "BS" : "드론"} 위치 정밀 계산 중 (후보 주변 ${step} m 간격, ${N.toLocaleString("ko-KR")}곳)`
+      : `${BSM ? "BS" : "중계"} 위치 계산 중 (${step} m 격자, 후보 ${N.toLocaleString("ko-KR")}곳)`;
     $("prog").style.width = "0%";
     pump();
   }
   function finishStage() {
     const c = collect;
+    if (BSM) { finishBs(c); return; }
     const tab = E.nodeTable(model, c.nm, c.s).tab;
     const g = E.relayGrid(tab, c.rel, P);
     let xy, done;
@@ -825,6 +859,32 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
     }
     const info = {}, ft = E.finalTable(model, tab, c.nm, c.s, xy, info);
     Object.assign(state.relay, { final_table: ft, info, final: E.decide(ft, P, true) });
+    drawHeat();
+    if (c.rest.length) { runRelay(c.rest); }
+    else { collect = null; $("statetext").textContent = done; $("prog").style.width = "100%"; }
+    render();
+  }
+
+  /** BS page: rank the BS candidates of a finished stage, move the BS there (unless placed by hand), keep the plan at
+   *  the best spot for comparison. With no spot that connects an MS, no BS is shown. */
+  function finishBs(c) {
+    const g = E.bsGrid(E.msTable(model, c.nm, c.s), c.rel, P);
+    let xy, done, best;
+    if (c.fine) {  // keep the grid stage (heat map, candidates); only the BS position is refined
+      const picks = E.refinePick(c.grid, E.relayScore(g), g.margin), prev = state.relay;
+      best = picks[0]; xy = [c.grid.x[best], c.grid.y[best]];
+      Object.assign(prev, { gen: c.gen, xy, none: !g.reach[best], fine: { step: c.step, n: c.grid.x.length, picks: picks.map((i) => [c.grid.x[i], c.grid.y[i]]) } });
+      done = `계산 완료 (${prev.step} m 격자 ${prev.grid.x.length.toLocaleString("ko-KR")}곳 + 후보 주변 ${c.step} m 간격 ${c.grid.x.length.toLocaleString("ko-KR")}곳)`;
+    } else {
+      const cands = E.pickCandidates(c.grid, E.relayScore(g), P.fine_top_k || P.top_k, g.margin);
+      best = cands[0]; xy = [c.grid.x[best], c.grid.y[best]];
+      state.relay = { gen: c.gen, step: c.step, grid: c.grid, rate: g.rate, reach: g.reach, cands, xy, fine: null, none: !g.reach[best] };
+      done = `계산 완료 (${c.step} m 격자, 후보 ${c.grid.x.length.toLocaleString("ko-KR")}곳)`;
+    }
+    if (!state.bsManual) { if (state.relay.none) delete state.pos.BS; else state.pos.BS = fromM(xy[0], xy[1]); }
+    const t2 = E.nodeTable(model, Object.assign({}, c.nm, { BS: { x: xy[0], y: xy[1] } }), c.s);
+    Object.assign(state.relay, { final_table: t2.tab, info: t2.info, final: E.decide(t2.tab, P, false) });
+    computeLive();
     drawHeat();
     if (c.rest.length) { runRelay(c.rest); }
     else { collect = null; $("statetext").textContent = done; $("prog").style.width = "100%"; }
@@ -912,8 +972,8 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
   function drawHeat() {
     // one canvas pixel per grid cell, stretched over the cells' footprint on the picture
     const cv = $("heat"), r = state.relay;
-    $("legend").hidden = !(r && state.heat && state.useRelay);
-    cv.hidden = !(r && state.heat && state.useRelay);
+    $("legend").hidden = !(r && state.heat && (BSM || state.useRelay));
+    cv.hidden = !(r && state.heat && (BSM || state.useRelay));
     if (!r) return;
     const { nx, ny, step } = r.grid, x0 = P.border_m, y0 = P.border_m;
     cv.width = nx; cv.height = ny;
@@ -925,8 +985,9 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
     let lo = Infinity, hi = -Infinity, top = 0;
     // colour only where routing through the drone wins, and only among the cells that connect the most MSs: the ranking
     // puts MSs connected first, so a cell that leaves an MS cut off is never brighter than one that connects it
-    for (let q = 0; q < r.rate.length; q++) if (r.rate[q] > 0 && r.usesRelay[q] && r.reach[q] > top) top = r.reach[q];
-    const helps = (q) => r.rate[q] > 0 && r.usesRelay[q] && r.reach[q] === top;
+    // (BS page: every BS candidate is coloured by its rate per MS, again only among those connecting the most MSs)
+    for (let q = 0; q < r.rate.length; q++) if (r.rate[q] > 0 && (BSM || r.usesRelay[q]) && r.reach[q] > top) top = r.reach[q];
+    const helps = (q) => r.rate[q] > 0 && (BSM || r.usesRelay[q]) && r.reach[q] === top;
     for (let q = 0; q < r.rate.length; q++) { if (!helps(q)) continue; const l = Math.log10(r.rate[q]); if (l < lo) lo = l; if (l > hi) hi = l; }
     const stops = [[43, 26, 78], [106, 44, 138], [192, 71, 122], [240, 138, 75], [249, 224, 122]];
     for (let q = 0; q < r.rate.length; q++) {
@@ -938,7 +999,7 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
       img.data[o + 3] = 255;
     }
     cx.putImageData(img, 0, 0);
-    $("lgmin").textContent = "덜"; $("lgmax").textContent = "더";  // colour = Dijkstra cost sum of the connected MSs (lower is brighter)
+    $("lgmin").textContent = BSM ? "낮음" : "덜"; $("lgmax").textContent = BSM ? "높음" : "더";  // colour = Dijkstra cost sum of the connected MSs (lower is brighter)
   }
   function relayPoint() {
     if (state.relayMode === "manual" && state.relayManual) return state.relayManual;
@@ -955,7 +1016,7 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
     if (state.relayMode === "manual") return state.manual;
     return state.relay;
   }
-  const shownRelay = () => (state.useRelay ? current() : null);  // what the map and tables show
+  const shownRelay = () => (!BSM && state.useRelay ? current() : null);  // what the map and tables show (no relay on the BS page)
   // displayed topology and link table: the relay result when there is one, else the node-only decision
   function shown() {
     const cur = shownRelay();
@@ -1054,12 +1115,15 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
     for (const n of NODES) if (state.pos[n.key]) add(n.key, state.pos[n.key], n.c);
     const rp = relayOnMap();
     if (rp) add("R", rp, "var(--relay)", state.relayMode === "manual" ? "relay" : "relay auto");
+    if (BSM && state.bsManual && state.relay && !state.relay.none) add("최적", fromM(state.relay.xy[0], state.relay.xy[1]), "var(--bs)", "auto ghost");
     drawLinks();
   }
   function renderNodes() {
     const list = $("nodes");
-    const rows = NODES.map((n) => ({ key: n.key, label: n.key, h: `안테나 ${n.h} m`, c: n.c, p: state.pos[n.key] }));
-    rows.push({ key: "R", label: "R", h: !state.useRelay ? "배치 안 함" : state.relayMode === "manual" ? `직접 지정 · 드론 ${state.hR} m` : `자동 최적 · 드론 ${state.hR} m`, c: "var(--relay)",
+    const rows = NODES.map((n) => (BSM && n.key === "BS"
+      ? { key: n.key, label: n.key, h: `${state.bsManual ? "직접 지정" : "자동 최적"} · 안테나 ${state.hR} m`, c: n.c, p: state.pos.BS, bs: true }
+      : { key: n.key, label: n.key, h: `안테나 ${n.h} m`, c: n.c, p: state.pos[n.key] }));
+    if (!BSM) rows.push({ key: "R", label: "R", h: !state.useRelay ? "배치 안 함" : state.relayMode === "manual" ? `직접 지정 · 드론 ${state.hR} m` : `자동 최적 · 드론 ${state.hR} m`, c: "var(--relay)",
                 p: relayOnMap(), relay: true });
     list.replaceChildren(...rows.map((n) => {
       const b = document.createElement("button");
@@ -1073,20 +1137,32 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
       top.append(dot, name, h);
       if (state.sel === n.key) {
         const hint = document.createElement("span"); hint.className = "hint";
-        hint.textContent = n.relay ? "지도를 누르면 직접 지정" : "지도를 누르세요"; top.append(hint);
+        hint.textContent = n.relay || n.bs ? "지도를 누르면 직접 지정" : "지도를 누르세요"; top.append(hint);
       }
       const co = document.createElement("div");
       if (n.p) {
         const ll = lonlat(n.p.u, n.p.v);
         co.className = "coord"; co.style.whiteSpace = "pre-line";
         co.textContent = `${f6(ll.lat)} N, ${f6(ll.lon)} E\n${plusCode(ll.lat, ll.lon).slice(4)} · 지면 ${Math.round(groundAt(n.p.u, n.p.v))} m`;
+      } else if (n.bs) {
+        co.className = "coord empty";
+        co.textContent = !msPlaced() ? "MS1·MS2를 찍으면 찾습니다" : state.relay && state.relay.none ? "어느 위치에서도 MS가 연결되지 않습니다" : "계산 후 표시됩니다";
       } else { co.className = "coord empty"; co.textContent = n.relay ? (!state.useRelay ? "'중계기 배치'를 켜면 표시됩니다" : current() ? "드론 없이 가는 편이 낫습니다" : "계산 후 표시됩니다") : "아직 찍지 않았습니다"; }
       b.append(top, co);
       if (n.p && !n.relay && onWater(n.p.u, n.p.v)) { const w = document.createElement("span"); w.className = "chip"; w.textContent = "수면 위입니다"; b.append(w); }
+      if (n.bs && state.bsManual) {
+        const back = document.createElement("span"); back.className = "chip"; back.style.cursor = "pointer";
+        back.textContent = "최적 위치로 돌아가기";
+        back.addEventListener("click", (e) => {
+          e.stopPropagation(); state.bsManual = false; state.dirty = true; toBestBs();
+          computeLive(); render();
+        });
+        b.append(back);
+      }
       if (n.relay && state.relayMode === "manual") {
         const back = document.createElement("span"); back.className = "chip"; back.style.cursor = "pointer";
         back.textContent = "자동 최적 위치로 돌아가기";
-        back.addEventListener("click", (e) => { e.stopPropagation(); state.relayMode = "auto"; state.relayManual = null; computeLive(); render(); });
+        back.addEventListener("click", (e) => { e.stopPropagation(); state.relayMode = "auto"; state.relayManual = null; state.dirty = true; computeLive(); render(); });
         b.append(back);
       }
       b.addEventListener("click", () => {
@@ -1204,6 +1280,19 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
     const box = $("result"); box.replaceChildren();
     const row = (k, nodes) => { const d = document.createElement("div"); d.className = "row"; const kk = document.createElement("span"); kk.className = "k"; kk.textContent = k; const v = document.createElement("div"); v.className = "v"; v.append(...nodes); d.append(kk, v); box.append(d); };
     const span = (cls, t) => { const s = document.createElement("span"); s.className = cls; s.textContent = t; return s; };
+    if (BSM) {  // BS page: the plan at the shown BS, and the best spot's next to a hand-placed BS
+      const r = state.relay;
+      if (!msPlaced()) { row("상태", [span("desc", "MS1, MS2를 모두 찍으면 BS 위치를 찾습니다")]); return; }
+      if (!state.live) { row("BS", [span("desc", r && r.none ? "어느 위치에서도 MS가 연결되지 않습니다" : "BS 위치 계산 중…")]); return; }
+      const b = state.live.base;
+      row(state.bsManual ? "직접 지정 BS" : "최적 BS", [span("topo", b.label), rateRows(b, state.live.tab), treeSvg(b)]);
+      if (state.bsManual) {
+        if (r && r.final && !r.none) row("최적 BS", [span("topo", r.final.label), rateRows(r.final, r.final_table), treeSvg(r.final)]);
+        else row("최적 BS", [span("desc", r && r.none ? "MS가 연결되는 위치가 없습니다" : "계산 중…")]);
+        box.lastChild.classList.add("off");  // not the one on the map
+      }
+      return;
+    }
     if (!state.live) { row("상태", [span("desc", "세 노드를 모두 찍으면 계산합니다")]); return; }
     const b = state.live.base;
     row("중계 없음", [span("topo", b.label), rateRows(b, state.live.tab), treeSvg(b)]);
@@ -1387,7 +1476,7 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
     $("save").disabled = !allPlaced() || (!!db && !state.dirty);
     $("save").textContent = db ? "위치 저장" : "파일로 저장";
     $("load").hidden = !!db;
-    $("copy").hidden = !(REGION && REGION.config);
+    $("copy").hidden = !(REGION && REGION.config) || BSM;  // the command-line planner has no BS search
     const st = $("status");
     const when = state.savedAt ? new Date(state.savedAt).toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
     if (!db) { st.className = state.savedAt && !state.dirty ? "status ok" : "status"; st.textContent = state.savedAt && !state.dirty ? "파일 저장·불러옴 " + when : ""; }
@@ -1423,7 +1512,7 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
       }
     };
     const b = state.live.base;
-    section("중계기 없이", b, b.alternatives, state.live.tab);
+    section(BSM ? (state.bsManual ? "직접 지정한 BS 위치" : "최적 BS 위치") : "중계기 없이", b, b.alternatives, state.live.tab);
     const cur = shownRelay();
     if (cur) section(state.relayMode === "manual" ? "중계기 포함 (직접 지정 위치, 상위 5)" : "중계기 포함 (최적 위치, 상위 5)",
                      cur.final, cur.final.alternatives.slice(0, 5), cur.final_table);
@@ -1462,6 +1551,7 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
   $("save").addEventListener("click", async () => {
     const st = $("status"); $("save").disabled = true;
     const nodes = {};
+    if (BSM) { saveDoc(bsDoc(), st); return; }
     for (const n of NODES) { const p = state.pos[n.key], ll = lonlat(p.u, p.v); nodes[n.key] = { lat: ll.lat, lon: ll.lon, u: p.u, v: p.v, ground_m: groundAt(p.u, p.v), pluscode: plusCode(ll.lat, ll.lon) }; }
     const cur = current(), doc = { nodes, tx_power_dbm: state.tx, relay_height_m: state.hR, eesm_beta: P.eesm_beta, noise_figure_db: P.noise_figure_db,
                                  cable_loss_db: P.cable_loss_db, fade_margin_db: P.fade_margin_db || 0, saved_at: new Date().toISOString() };
@@ -1473,11 +1563,29 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
       doc.relay = { mode: state.relayMode, lat: ll.lat, lon: ll.lon, u: rp.u, v: rp.v, grid_m: state.relayMode === "auto" ? (state.relay.fine ? state.relay.fine.step : state.relay.step) : null,
                     used: !!cur.final.usesRelay, topology: cur.final.label, description: cur.final.description, rate_bps: cur.final.rate_bps };
     }
+    saveDoc(doc, st);
+  });
+  /** BS page: MS positions, the BS shown (best spot or placed by hand) with its plan, and the best spot when they differ. */
+  function bsDoc() {
+    const pt = (p) => { const ll = lonlat(p.u, p.v); return { lat: ll.lat, lon: ll.lon, u: p.u, v: p.v, ground_m: groundAt(p.u, p.v), pluscode: plusCode(ll.lat, ll.lon) }; };
+    const r = state.relay, b = state.live.base, nodes = {};
+    for (const k of ["BS", "MS1", "MS2"]) nodes[k] = pt(state.pos[k]);
+    const doc = { mode: "bs", nodes, tx_power_dbm: state.tx, bs_height_m: state.hR, eesm_beta: P.eesm_beta, noise_figure_db: P.noise_figure_db,
+                  cable_loss_db: P.cable_loss_db, fade_margin_db: P.fade_margin_db || 0, saved_at: new Date().toISOString(),
+                  bs: Object.assign(pt(state.pos.BS), { mode: state.bsManual ? "manual" : "auto", topology: b.label, description: b.description, rate_bps: b.rate_bps,
+                                                         grid_m: !state.bsManual && r ? (r.fine ? r.fine.step : r.step) : null }) };
+    if (state.bsManual && r && r.final && !r.none) {
+      doc.best = Object.assign(pt(fromM(r.xy[0], r.xy[1])), { topology: r.final.label, description: r.final.description, rate_bps: r.final.rate_bps,
+                                                             grid_m: r.fine ? r.fine.step : r.step });
+    }
+    return doc;
+  }
+  async function saveDoc(doc, st) {
     if (!db) {  // outside Claude: save the pick as a JSON file
       doc.region = REGION.id;
       const a = document.createElement("a");
       a.href = URL.createObjectURL(new Blob([JSON.stringify(doc, null, 2)], { type: "application/json" }));
-      a.download = `autorelay_${REGION.id}_${doc.saved_at.slice(0, 16).replace(/[:T]/g, "-")}.json`;
+      a.download = `autorelay_${BSM ? "bs_" : ""}${REGION.id}_${doc.saved_at.slice(0, 16).replace(/[:T]/g, "-")}.json`;
       document.body.append(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(a.href), 1000);
       state.dirty = false; state.savedAt = doc.saved_at; renderStatus();
@@ -1490,10 +1598,10 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
       st.textContent += " · 채팅에서 계산해 달라고 하시면 됩니다";
     } catch (e) {
       st.className = "status err";
-      st.textContent = e && e.code === "invalid_argument" ? "이 화면에서는 저장 권한이 없습니다. 명령 복사를 써 주세요." : "저장하지 못했습니다. 잠시 뒤 다시 눌러 주세요.";
+      st.textContent = e && e.code === "invalid_argument" ? (BSM ? "이 화면에서는 저장 권한이 없습니다." : "이 화면에서는 저장 권한이 없습니다. 명령 복사를 써 주세요.") : "저장하지 못했습니다. 잠시 뒤 다시 눌러 주세요.";
       $("save").disabled = false;
     }
-  });
+  }
 
   // ---------------- regions
   let regions = [], unsub = null, loadSeq = 0;
@@ -1532,9 +1640,10 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
       { key: "MS1", h: P.heights_m.MS1, c: "var(--ms1)" },
       { key: "MS2", h: P.heights_m.MS2, c: "var(--ms2)" },
     ];
-    Object.assign(state, { sel: "BS", pos: {}, hR: Math.min(HMAX, Math.max(HMIN, P.heights_m.R)), relayMode: "auto", relayManual: null,
-                           dirty: false, savedAt: null, live: null, relay: null, manual: null, preview: null });
+    Object.assign(state, { sel: BSM ? "MS1" : "BS", pos: {}, hR: Math.min(HMAX, Math.max(HMIN, P.heights_m[BSM ? "BS" : "R"])), relayMode: "auto", relayManual: null,
+                           bsManual: false, dirty: false, savedAt: null, live: null, relay: null, manual: null, preview: null });
     for (const [k, v] of Object.entries(TD.nodes_px || {})) state.pos[k] = { u: v[0] + 0.5, v: v[1] + 0.5 };
+    if (BSM) delete state.pos.BS;  // the BS page finds it
     for (const k in inlineGrids) delete inlineGrids[k];
     vp.style.aspectRatio = `${W} / ${H}`;
     stage.style.width = W + "px"; stage.style.height = H + "px";
@@ -1561,6 +1670,7 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
   function applyPick(d) {
     let moved = false;
     for (const n of NODES) {
+      if (BSM && n.key === "BS") continue;  // the BS page finds the BS (a hand-placed one comes with d.bs)
       const p = d.nodes && d.nodes[n.key];
       if (p && typeof p.u === "number" && typeof p.v === "number" && !onWater(p.u, p.v)) {
         const o = state.pos[n.key];
@@ -1576,8 +1686,15 @@ table.links th.opt, table.links td.opt { padding-left: 14px; }  /* keeps 'AH' an
         && ["BS", "MS1", "MS2", "R"].some((n) => d.cable_loss_db[n] !== E.cableDb(P, n))) {
       P.cable_loss_db = { BS: d.cable_loss_db.BS, MS1: d.cable_loss_db.MS1, MS2: d.cable_loss_db.MS2, R: d.cable_loss_db.R }; state.cab = Object.assign({}, P.cable_loss_db); moved = true;
     }
-    if (typeof d.relay_height_m === "number" && d.relay_height_m >= HMIN && d.relay_height_m <= HMAX && d.relay_height_m !== state.hR) { state.hR = d.relay_height_m; moved = true; }
-    if (d.relay && d.relay.mode === "manual" && typeof d.relay.u === "number") { state.relayMode = "manual"; state.relayManual = { u: d.relay.u, v: d.relay.v }; moved = true; }
+    const hh = BSM ? d.bs_height_m : d.relay_height_m;  // the slider: BS antenna on the BS page, drone on the relay page
+    if (typeof hh === "number" && hh >= HMIN && hh <= HMAX && hh !== state.hR) { state.hR = hh; moved = true; }
+    if (!BSM && d.relay && d.relay.mode === "manual" && typeof d.relay.u === "number") { state.relayMode = "manual"; state.relayManual = { u: d.relay.u, v: d.relay.v }; moved = true; }
+    else if (!BSM && d.relay && d.relay.mode === "auto" && state.relayMode === "manual") { state.relayMode = "auto"; state.relayManual = null; moved = true; }
+    if (BSM && d.bs && d.bs.mode === "manual" && typeof d.bs.u === "number" && typeof d.bs.v === "number" && !onWater(d.bs.u, d.bs.v)) {
+      state.bsManual = true; state.pos.BS = { u: d.bs.u, v: d.bs.v }; moved = true;
+    } else if (BSM && d.bs && d.bs.mode === "auto" && state.bsManual) {  // a saved automatic BS: follow the best spot again
+      state.bsManual = false; toBestBs(); moved = true;
+    }
     return moved;
   }
   function subscribe() {

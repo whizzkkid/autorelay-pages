@@ -1320,6 +1320,37 @@
     return { rate, usesRelay, best, margin, reach };
   }
 
+  /** BS at every candidate, no relay (the BS-placement page): mm = scalar e-SNR between the two MSs, links[ms] =
+   *  {to: ms -> BS, from: BS -> ms} per candidate (relayLinks with the BS antenna height and power at the candidate).
+   *  The same ranking inputs as relayGrid: MSs connected, rate per connected MS, and the weakest e-SNR (both directions)
+   *  over the links in use, the tie-break between candidates of equal rate. */
+  function bsGrid(mm, links, p) {
+    const N = links.MS1.to.length;
+    const rate = new Float64Array(N), reach = new Uint8Array(N), margin = new Float64Array(N);
+    const best = { MS1: new Uint8Array(N), MS2: new Uint8Array(N) };
+    const e = { "MS1>MS2": mm["MS1>MS2"], "MS2>MS1": mm["MS2>MS1"] };
+    const cost = costOf(p), w = (a, b) => edgeWeight(e, a, b, p.traffic, cost);
+    const paths = msPaths(false, p.max_hops), limited = p.max_hops != null, ok = pathOk(paths, "n" + p.max_hops);
+    const pc = (q) => { let c = 0.0; for (let k = 0; k < q.length - 1; k++) c += w(q[k], q[k + 1]); return c; };
+    for (let i = 0; i < N; i++) {
+      for (const n of MS_NODES) { e[n + ">BS"] = links[n].to[i]; e["BS>" + n] = links[n].from[i]; }
+      const c1 = paths.MS1.map(pc), c2 = paths.MS2.map(pc);
+      const [i1, i2] = choosePaths(c1, c2, ok, limited);
+      best.MS1[i] = i1; best.MS2[i] = i2;
+      let total = 0.0, nr = 0, mg = Infinity;
+      for (const [ms, bc, bi] of [["MS1", c1[i1], i1], ["MS2", c2[i2], i2]]) {
+        if (!isFinite(bc)) continue;  // this MS has no valid path to the BS here
+        total += bc; nr++;
+        const q = paths[ms][bi];
+        for (let k = 0; k < q.length - 1; k++) mg = Math.min(mg, e[q[k] + ">" + q[k + 1]], e[q[k + 1] + ">" + q[k]]);
+      }
+      reach[i] = nr;
+      rate[i] = nr ? rateScale(p) / total : 0;  // per connected MS
+      margin[i] = mg === Infinity ? -Infinity : mg;
+    }
+    return { rate, reach, best, margin };
+  }
+
   function treeFromPaths(p1, p2) {
     const parent = {};
     for (const path of [p1, p2]) for (let k = 0; k < path.length - 1; k++) if (!(path[k + 1] in parent)) parent[path[k + 1]] = path[k];
@@ -1469,7 +1500,48 @@
              relay_xy: xy, final_table: fin, final: decide(fin, p, true) };
   }
 
+  // ---------------------------------------------------------------- BS placement (no relay)
+  /** e-SNR MS1 <-> MS2, each direction traced from its transmitter (the one node link that does not depend on the BS). */
+  function msTable(m, nodes, s) {
+    const tab = {};
+    for (const [a, b] of [["MS1", "MS2"], ["MS2", "MS1"]]) {
+      tab[a + ">" + b] = linkEsnr(m, { x: nodes[a].x, y: nodes[a].y, h: s.heights[a] }, { x: nodes[b].x, y: nodes[b].y, h: s.heights[b] },
+                                  s.tx[a], s.tx[b], undefined, cableDb(m.p, a) + cableDb(m.p, b)).fwd;
+    }
+    return tab;
+  }
+  /** e-SNR MS <-> BS candidate over a whole grid: to = MS transmits, from = the BS (its height and power) transmits. */
+  function bsLinks(m, nodes, s, grid) {
+    const out = {};
+    for (const n of MS_NODES) out[n] = relayLinks(m, nodes[n], s.heights[n], s.tx[n], grid, 0, grid.x.length, s.heights.BS, s.tx.BS,
+                                                  cableDb(m.p, n) + cableDb(m.p, "BS"));
+    return out;
+  }
+  /** The whole BS search for fixed MS1 / MS2 (what the page does on its worker pool): grid, ranking, fine search, and
+   *  the node table and decision at the chosen spot. A BS stands on the ground, so candidates over water are left out. */
+  function bsPlan(m, nodes, s) {
+    const p = Object.assign({}, m.p, s.params || {});
+    const mm = msTable(m, nodes, s);
+    const grid = candidateGrid(m, s.grid_m || p.grid_m, p.border_m, false);
+    const g = bsGrid(mm, bsLinks(m, nodes, s, grid), p);
+    const refineOn = p.fine_m && p.fine_m < grid.step;
+    const cands = pickCandidates(grid, relayScore(g), refineOn ? (p.fine_top_k || p.top_k) : p.top_k, g.margin);
+    let xy = [grid.x[cands[0]], grid.y[cands[0]]], fine = null;
+    if (refineOn && cands.length) {
+      const fg = localGrid(m, cands.map((i) => [grid.x[i], grid.y[i]]), p.fine_m, p.fine_radius_m || 1.5 * grid.step, p.border_m, false);
+      if (fg.x.length) {
+        const fgr = bsGrid(mm, bsLinks(m, nodes, s, fg), p), picks = refinePick(fg, relayScore(fgr), fgr.margin);
+        xy = [fg.x[picks[0]], fg.y[picks[0]]];
+        fine = { grid: fg, rate: fgr.rate, reach: fgr.reach, cands: picks.slice(0, p.top_k) };
+      }
+    }
+    const { tab, info } = nodeTable(m, Object.assign({}, nodes, { BS: { x: xy[0], y: xy[1] } }), s);
+    return { mm, grid, rate: g.rate, reach: g.reach, margin: g.margin, cands, fine, bs_xy: xy, final_table: tab, info,
+             final: decide(tab, p, false) };
+  }
+
   const api = { cableDb, noiseDbm, tableLevel, costOf, rateScale, edgeWeight, nodeTable, relayLinks, finalTable, plan, makeModel, rays, channelGain, eesmDb, budgetDb, linkEsnr, groundAt, bullington, decide, dijkstra, relayGrid,
+                bsGrid, msTable, bsLinks, bsPlan,
                 treeFromPaths, relayScore, BIG, rankTrees, enumerateTrees, candidateGrid, localGrid, refinePick, pickCandidates, MS_PATHS, msPaths, NODE_NAMES, RELAY };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.AutoRelayEngine = api;

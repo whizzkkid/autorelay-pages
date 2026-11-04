@@ -4,3 +4,5 @@
   Referrer-Policy: no-referrer
 /regions/*
   Cache-Control: public, max-age=3600
+/bs/regions/*
+  Cache-Control: public, max-age=3600
